@@ -1,3 +1,1 @@
-aiogram==3.1.0
-python-dotenv==1.1.1
-pydantic==2.7.4 --only-binary=:all:
+aiogram==3.x
