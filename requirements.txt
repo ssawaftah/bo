@@ -1,5 +1,6 @@
 aiogram==3.3.0
-pydantic==2.6.1
+pydantic==2.5.3
 python-dotenv
 aiohttp
 aiofiles
+aiosqlite
