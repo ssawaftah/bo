@@ -227,12 +227,21 @@ def approval_required():
 def auto_approve_enabled():
     return db.get_setting('auto_approve') == '1'
 
+def get_start_button_text():
+    return db.get_setting('start_button_text') or '🚀 بدء الاستخدام'
+
 # لوحات المفاتيح للمستخدم العادي
 def main_keyboard():
-    start_text = db.get_setting('start_button_text') or '🚀 بدء الاستخدام'
     keyboard = [
         [KeyboardButton("📚 أقسام القصص")],
         [KeyboardButton("ℹ️ حول البوت"), KeyboardButton("📞 اتصل بنا")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def start_keyboard():
+    start_text = get_start_button_text()
+    keyboard = [
+        [KeyboardButton(start_text)]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -250,7 +259,7 @@ def stories_keyboard(category_id):
     keyboard = []
     for i in range(0, len(stories), 2):
         row = stories[i:i+2]
-        keyboard.append([KeyboardButton(f"📖 {story[1]}") for story in row])
+        keyboard.append([KeyboardButton(f" {story[1]}") for story in row])
     keyboard.append([KeyboardButton("🔙 رجوع")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -309,8 +318,8 @@ def admin_add_story_keyboard():
 
 def admin_story_type_keyboard():
     keyboard = [
-        [KeyboardButton("📝 قصة نصية"), KeyboardButton("🎥 قصة فيديو")],
-        [KeyboardButton("🖼️ قصة صورة"), KeyboardButton("🔙 إضافة قصة")]
+        [KeyboardButton("📝 قصة نصية"), KeyboardButton("🎥 فيديو")],
+        [KeyboardButton("🖼️ صورة"), KeyboardButton("🔙 إضافة ")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -340,7 +349,7 @@ def admin_delete_categories_keyboard():
     keyboard.append([KeyboardButton("🔙 إدارة الأقسام")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# معالجة الأوامر للمستخدمين
+# معالجة الأوامر للمستخدمين - الإصدار المصحح
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
@@ -355,59 +364,68 @@ async def start(update: Update, context: CallbackContext) -> None:
         )
         return
     
+    # إضافة المستخدم أو تحديث بياناته
     db.add_user(user_id, user.username, user.first_name, user.last_name)
     
     user_data = db.get_user(user_id)
     
     # التحقق من الموافقة التلقائية
     if auto_approve_enabled():
-        db.approve_user(user_id)
-        welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت القصص! 🎭'
+        if not user_data or user_data[4] == 0:
+            db.approve_user(user_id)
+        welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت نسونجي! 🎭'
         await update.message.reply_text(
             f"{welcome_message}\n\nأهلاً وسهلاً بك {user.first_name}! 👋",
             reply_markup=main_keyboard()
         )
         return
     
+    # إذا كان المستخدم معتمداً بالفعل
     if user_data and user_data[4] == 1:
-        welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت القصص! 🎭'
+        welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت نسونجي! 🎭'
         await update.message.reply_text(
             f"{welcome_message}\n\nمرحباً kembali {user.first_name}! 👋",
             reply_markup=main_keyboard()
         )
     else:
         if approval_required():
-            db.conn.execute('''
-                INSERT OR REPLACE INTO join_requests (user_id, username, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, user.username, user.first_name, user.last_name))
-            db.conn.commit()
+            # التحقق إذا كان هناك طلب pending بالفعل
+            pending_requests = db.get_pending_requests()
+            user_has_pending = any(req[0] == user_id for req in pending_requests)
             
-            admin_id = get_admin_id()
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ الموافقة", callback_data=f"approve_{user_id}"),
-                    InlineKeyboardButton("❌ رفض", callback_data=f"reject_{user_id}")
+            if not user_has_pending:
+                db.conn.execute('''
+                    INSERT OR REPLACE INTO join_requests (user_id, username, first_name, last_name)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, user.username, user.first_name, user.last_name))
+                db.conn.commit()
+                
+                admin_id = get_admin_id()
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ الموافقة", callback_data=f"approve_{user_id}"),
+                        InlineKeyboardButton("❌ رفض", callback_data=f"reject_{user_id}")
+                    ]
                 ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"📩 طلب انضمام جديد:\n\n👤 الاسم: {user.first_name} {user.last_name or ''}\n📱 username: @{user.username or 'لا يوجد'}\n🆔 ID: {user_id}",
-                    reply_markup=reply_markup
-                )
-            except Exception as e:
-                logger.error(f"خطأ في إرسال الرسالة للمدير: {e}")
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=f"📩 طلب انضمام جديد:\n\n👤 الاسم: {user.first_name} {user.last_name or ''}\n📱 username: @{user.username or 'لا يوجد'}\n🆔 ID: {user_id}",
+                        reply_markup=reply_markup
+                    )
+                except Exception as e:
+                    logger.error(f"خطأ في إرسال الرسالة للمدير: {e}")
             
             await update.message.reply_text(
-                "📋 تم إرسال طلب انضمامك إلى المدير. ستصلك رسالة تأكيد عند الموافقة على طلبك."
+                "📋 تم إرسال طلب انضمامك إلى المدير. ستصلك رسالة تأكيد عند الموافقة على طلبك.",
+                reply_markup=start_keyboard()
             )
         else:
             # إذا كان نظام الموافقة معطلاً
             db.approve_user(user_id)
-            welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت القصص! 🎭'
+            welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت نسونجي! 🎭'
             await update.message.reply_text(
                 f"{welcome_message}\n\nأهلاً وسهلاً بك {user.first_name}! 👋",
                 reply_markup=main_keyboard()
@@ -430,11 +448,12 @@ async def handle_admin_callback(update: Update, context: CallbackContext) -> Non
         db.approve_user(target_user_id)
         
         try:
-            start_text = db.get_setting('start_button_text') or '🚀 بدء الاستخدام'
+            start_text = get_start_button_text()
+            welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت نسونجي! 🎭'
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text="🎉 تمت الموافقة على طلب انضمامك!\n\nانقر على الزر أدناه لبدء الاستخدام:",
-                reply_markup=ReplyKeyboardMarkup([[KeyboardButton(start_text)]], resize_keyboard=True)
+                text=f"🎉 تمت الموافقة على طلب انضمامك!\n\n{welcome_message}",
+                reply_markup=main_keyboard()
             )
         except Exception as e:
             logger.error(f"خطأ في إرسال رسالة للمستخدم: {e}")
@@ -470,7 +489,7 @@ async def handle_media(update: Update, context: CallbackContext) -> None:
         
         context.user_data.clear()
 
-# معالجة الرسائل للمستخدمين
+# معالجة الرسائل للمستخدمين - الإصدار المصحح
 async def handle_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -481,16 +500,29 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
         return
     
     user_data = db.get_user(user_id)
-    if not user_data or user_data[4] == 0:
-        start_text = db.get_setting('start_button_text') or '🚀 بدء الاستخدام'
-        if text == start_text:
-            db.approve_user(user_id)
-            welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت القصص! 🎭'
-            await update.message.reply_text(f"🎉 {welcome_message}", reply_markup=main_keyboard())
+    start_button_text = get_start_button_text()
+    
+    # معالجة زر البدء الديناميكي
+    if text == start_button_text:
+        if not user_data or user_data[4] == 0:
+            if auto_approve_enabled():
+                db.approve_user(user_id)
+                welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت نسونجي! 🎭'
+                await update.message.reply_text(f"🎉 {welcome_message}", reply_markup=main_keyboard())
+            else:
+                await update.message.reply_text("⏳ لم يتم الموافقة على حسابك بعد. انتظر الموافقة من المدير.")
         else:
-            await update.message.reply_text("⏳ لم يتم الموافقة على حسابك بعد. انتظر الموافقة من المدير.")
+            # إذا كان المستخدم معتمداً بالفعل
+            welcome_message = db.get_setting('welcome_message') or 'مرحباً بك في بوت نسونجي! 🎭'
+            await update.message.reply_text(f"{welcome_message}", reply_markup=main_keyboard())
         return
     
+    # إذا لم يكن المستخدم معتمداً بعد
+    if not user_data or user_data[4] == 0:
+        await update.message.reply_text("⏳ لم يتم الموافقة على حسابك بعد. انتظر الموافقة من المدير.")
+        return
+    
+    # معالجة رسائل المستخدم العادي المعتمد
     if text == "🏠 الرئيسية":
         await update.message.reply_text("🏠 الصفحة الرئيسية", reply_markup=main_keyboard())
     
@@ -502,7 +534,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             await update.message.reply_text("⚠️ لا توجد أقسام متاحة حالياً.")
     
     elif text == "🔙 رجوع":
-        await update.message.reply_text("📚 أقسام القصص:", reply_markup=categories_keyboard())
+        await update.message.reply_text("📚 الأقسام:", reply_markup=categories_keyboard())
     
     elif text == "ℹ️ حول البوت":
         about_text = db.get_setting('about_text') or '🤖 بوت القصص التفاعلي'
@@ -528,7 +560,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             for story in all_stories:
                 if story[1] == story_title:
                     if story[3] == 'text':
-                        await update.message.reply_text(f"📖 {story[1]}\n\n{story[2]}\n\n---\nنهاية القصة 📚")
+                        await update.message.reply_text(f" {story[1]}\n\n{story[2]}\n\n---\nنهاية القصة 📚")
                     elif story[3] == 'video':
                         await update.message.reply_video(story[4], caption=f"🎥 {story[1]}")
                     elif story[3] == 'photo':
@@ -537,7 +569,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
         
         await update.message.reply_text("⚠️ لم أفهم طلبك.", reply_markup=main_keyboard())
 
-# معالجة رسائل المدير - النسخة المطورة
+# معالجة رسائل المدير - النسخة المطورة والمصححة
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -574,8 +606,13 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data.clear()
         return
     
-    # حالة تعديل قالب الإشعارات
+    # حالة تعديل قالب الإشعارات - الإصدار المصحح
     elif context.user_data.get('editing_broadcast_template'):
+        # التحقق من أن القالب يحتوي على {message}
+        if '{message}' not in text:
+            await update.message.reply_text("❌ يجب أن يحتوي القالب على {message} مكان النص الرئيسي. أرسل القالب مرة أخرى:")
+            return
+        
         db.update_setting('broadcast_template', text)
         await update.message.reply_text("✅ تم تحديث قالب الإشعارات بنجاح!", reply_markup=admin_settings_keyboard())
         context.user_data.clear()
@@ -588,7 +625,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data.clear()
         return
 
-    # === باقي حالات إدخال البيانات (من الكود السابق) ===
+    # === باقي حالات إدخال البيانات ===
     elif context.user_data.get('awaiting_story_title'):
         title = text
         context.user_data['story_title'] = title
@@ -638,7 +675,12 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         users = db.get_all_users()
         success = 0
         broadcast_template = db.get_setting('broadcast_template') or '📢 إشعار من الإدارة:\n\n{message}'
-        message_content = broadcast_template.format(message=text)
+        
+        # استخدام القالب بشكل صحيح
+        try:
+            message_content = broadcast_template.format(message=text)
+        except:
+            message_content = f"📢 إشعار من الإدارة:\n\n{text}"
         
         for user_data in users:
             try:
@@ -701,11 +743,11 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     
     elif text == "📋 تعديل قالب الإشعارات":
         current_template = db.get_setting('broadcast_template') or '📢 إشعار من الإدارة:\n\n{message}'
-        await update.message.reply_text(f"📢 القالب الحالي:\n{current_template}\n\nأرسل القالب الجديد (استخدم {message} مكان النص):")
+        await update.message.reply_text(f"📢 القالب الحالي:\n{current_template}\n\nأرسل القالب الجديد (يجب أن يحتوي على {message} مكان النص):")
         context.user_data['editing_broadcast_template'] = True
     
     elif text == "🔄 تعديل زر البدء":
-        current_button = db.get_setting('start_button_text') or '🚀 بدء الاستخدام'
+        current_button = get_start_button_text()
         await update.message.reply_text(f"🔄 النص الحالي: {current_button}\n\nأرسل النص الجديد لزر البدء:")
         context.user_data['editing_start_button'] = True
     
@@ -713,7 +755,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         current_status = approval_required()
         new_status = '0' if current_status else '1'
         db.update_setting('approval_required', new_status)
-        status_text = "معطل" if current_status else "مفعل"
+        status_text = "تعطيل" if current_status else "تفعيل"
         await update.message.reply_text(f"✅ تم {status_text} نظام الموافقة على الطلبات", reply_markup=admin_settings_keyboard())
     
     elif text.startswith("🤖 الموافقة التلقائية:"):
@@ -731,7 +773,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             settings_text += f"🔧 {setting[2]}:\n{value_preview}\n\n"
         await update.message.reply_text(settings_text)
 
-    # === باقي الأوامر (من الكود السابق) ===
+    # === باقي الأوامر ===
     elif text == "📊 إحصائيات":
         users_count = len(db.get_all_users())
         categories_count = len(db.get_categories())
@@ -906,7 +948,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_admin_callback))
     application.add_error_handler(error_handler)
     
-    logger.info("🚀 بدء تشغيل البوت الاحترافي مع التحكم الكامل...")
+    logger.info("🚀 بدء تشغيل البوت الاحترافي مع الإصلاحات...")
     application.run_polling()
 
 if __name__ == '__main__':
