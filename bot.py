@@ -104,39 +104,6 @@ class DatabaseManager:
                 description TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            ''',
-            # الإحصائيات
-            '''
-            CREATE TABLE IF NOT EXISTS statistics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE UNIQUE,
-                new_users INTEGER DEFAULT 0,
-                active_users INTEGER DEFAULT 0,
-                stories_read INTEGER DEFAULT 0,
-                total_messages INTEGER DEFAULT 0,
-                premium_conversions INTEGER DEFAULT 0
-            )
-            ''',
-            # الجلسات
-            '''
-            CREATE TABLE IF NOT EXISTS user_sessions (
-                user_id INTEGER PRIMARY KEY,
-                current_category INTEGER,
-                current_story INTEGER,
-                search_query TEXT,
-                last_interaction TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
-            )
-            ''',
-            # الإعجابات
-            '''
-            CREATE TABLE IF NOT EXISTS story_likes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                story_id INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, story_id)
-            )
             '''
         ]
         
@@ -219,8 +186,8 @@ class DatabaseManager:
 # إنشاء مدير قاعدة البيانات
 db = DatabaseManager()
 
-class UserManager:
-    """مدير المستخدمين"""
+class UserService:
+    """خدمة المستخدمين"""
     
     @staticmethod
     def create_or_update_user(user_id: int, username: str, first_name: str, last_name: str = ""):
@@ -253,7 +220,7 @@ class UserManager:
     @staticmethod
     def get_user_stats(user_id: int):
         """إحصائيات المستخدم"""
-        user = UserManager.get_user(user_id)
+        user = UserService.get_user(user_id)
         if not user:
             return None
             
@@ -266,21 +233,15 @@ class UserManager:
             ''', (user_id,))
             db.conn.commit()
         
-        cursor = db.conn.execute('''
-            SELECT COUNT(*) as total_likes FROM story_likes WHERE user_id = ?
-        ''', (user_id,))
-        likes = cursor.fetchone()[0]
-        
         return {
             'stories_read_today': user['daily_stories_read'],
             'daily_limit': db.get_setting('daily_free_stories', 5),
-            'total_likes': likes,
             'is_premium': user['is_premium'],
             'joined_date': user['created_at']
         }
 
-class StoryManager:
-    """مدير القصص"""
+class StoryService:
+    """خدمة القصص"""
     
     @staticmethod
     def get_categories():
@@ -317,35 +278,8 @@ class StoryManager:
         ''', (limit,))
         return [dict(row) for row in cursor.fetchall()]
 
-    @staticmethod
-    def increment_views(story_id: int):
-        """زيادة مشاهدات القصة"""
-        db.conn.execute('''
-            UPDATE stories SET views_count = views_count + 1 
-            WHERE id = ?
-        ''', (story_id,))
-        db.conn.commit()
-
-    @staticmethod
-    def toggle_like(story_id: int, user_id: int):
-        """تبديل الإعجاب"""
-        try:
-            db.conn.execute('''
-                INSERT INTO story_likes (user_id, story_id) VALUES (?, ?)
-            ''', (user_id, story_id))
-            db.conn.execute('''
-                UPDATE stories SET likes_count = likes_count + 1 WHERE id = ?
-            ''', (story_id,))
-        except sqlite3.IntegrityError:
-            # الإعجاب موجود بالفعل، نقوم بإزالته
-            db.conn.execute('DELETE FROM story_likes WHERE user_id = ? AND story_id = ?', (user_id, story_id))
-            db.conn.execute('''
-                UPDATE stories SET likes_count = likes_count - 1 WHERE id = ?
-            ''', (story_id,))
-        db.conn.commit()
-
-class KeyboardManager:
-    """مدير لوحات المفاتيح"""
+class KeyboardService:
+    """خدمة لوحات المفاتيح"""
     
     @staticmethod
     def user_main_menu(user_stats: dict = None):
@@ -368,7 +302,7 @@ class KeyboardManager:
     @staticmethod
     def user_categories_menu():
         """قائمة الأقسام"""
-        categories = StoryManager.get_categories()
+        categories = StoryService.get_categories()
         keyboard = []
         
         for i in range(0, len(categories), 2):
@@ -407,13 +341,13 @@ class KeyboardManager:
         ]
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-class MessageHandler:
-    """معالج الرسائل المركزي"""
+class BotMessageService:
+    """خدمة رسائل البوت"""
     
     @staticmethod
     async def send_welcome_message(update: Update, context: CallbackContext, user_id: int):
         """إرسال رسالة ترحيب"""
-        user = UserManager.get_user(user_id)
+        user = UserService.get_user(user_id)
         welcome_message = db.get_setting('welcome_message')
         
         if user and user['is_premium']:
@@ -421,7 +355,7 @@ class MessageHandler:
         
         await update.message.reply_text(
             welcome_message,
-            reply_markup=KeyboardManager.user_main_menu(UserManager.get_user_stats(user_id)),
+            reply_markup=KeyboardService.user_main_menu(UserService.get_user_stats(user_id)),
             parse_mode='Markdown'
         )
 
@@ -435,33 +369,18 @@ class MessageHandler:
         ''', (user_id,))
         db.conn.commit()
         
-        # زيادة المشاهدات
-        StoryManager.increment_views(story['id'])
-        
         # بناء نص القصة
         story_text = f"📖 **{story['title']}**\n\n"
-        if story['summary']:
+        if story.get('summary'):
             story_text += f"*{story['summary']}*\n\n"
         
         story_text += f"{story['content']}\n\n"
         story_text += f"---\n"
-        story_text += f"👤 المؤلف: {story['author']}\n"
-        story_text += f"⏰ وقت القراءة: {story['reading_time']} دقائق\n"
-        story_text += f"👁️ المشاهدات: {story['views_count'] + 1}\n"
-        story_text += f"❤️ الإعجابات: {story['likes_count']}\n"
-        
-        # أزرار التفاعل
-        keyboard = [
-            [
-                InlineKeyboardButton("❤️ أعجبني", callback_data=f"like_{story['id']}"),
-                InlineKeyboardButton("📤 مشاركة", callback_data=f"share_{story['id']}")
-            ],
-            [InlineKeyboardButton("📖 قصة أخرى", callback_data="another_story")]
-        ]
+        story_text += f"👤 المؤلف: {story.get('author', 'مجهول')}\n"
+        story_text += f"⏰ وقت القراءة: {story.get('reading_time', 5)} دقائق\n"
         
         await update.message.reply_text(
             story_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
 
@@ -474,7 +393,7 @@ async def start(update: Update, context: CallbackContext) -> None:
     context.user_data.clear()
     
     # تحديث بيانات المستخدم
-    UserManager.create_or_update_user(user_id, user.username, user.first_name, user.last_name)
+    UserService.create_or_update_user(user_id, user.username, user.first_name, user.last_name)
     
     # إذا كان المدير
     if user_id == int(os.getenv('ADMIN_ID', 123456789)):
@@ -488,15 +407,15 @@ async def start(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text(
             "👑 **مرحباً بك آلة المدير!**\n\n"
             "لوحة التحكم المتكاملة جاهزة للاستخدام.",
-            reply_markup=KeyboardManager.admin_main_menu()
+            reply_markup=KeyboardService.admin_main_menu()
         )
         return
     
-    user_data = UserManager.get_user(user_id)
+    user_data = UserService.get_user(user_id)
     
     # إذا كان المستخدم معتمداً
     if user_data and user_data['is_approved']:
-        await MessageHandler.send_welcome_message(update, context, user_id)
+        await BotMessageService.send_welcome_message(update, context, user_id)
         return
     
     # نظام الموافقة
@@ -535,8 +454,8 @@ async def start(update: Update, context: CallbackContext) -> None:
         )
     else:
         # الموافقة التلقائية
-        UserManager.approve_user(user_id)
-        await MessageHandler.send_welcome_message(update, context, user_id)
+        UserService.approve_user(user_id)
+        await BotMessageService.send_welcome_message(update, context, user_id)
 
 async def handle_admin_callback(update: Update, context: CallbackContext) -> None:
     """معالجة actions المدير"""
@@ -553,13 +472,13 @@ async def handle_admin_callback(update: Update, context: CallbackContext) -> Non
     
     if data.startswith('approve_'):
         target_user_id = int(data.split('_')[1])
-        UserManager.approve_user(target_user_id)
+        UserService.approve_user(target_user_id)
         
         try:
             await context.bot.send_message(
                 chat_id=target_user_id,
                 text="🎉 **تمت الموافقة على طلبك!**\n\nمرحباً بك في عالم القصص المثير!",
-                reply_markup=KeyboardManager.user_main_menu()
+                reply_markup=KeyboardService.user_main_menu()
             )
         except Exception as e:
             logger.error(f"خطأ في إرسال رسالة للمستخدم: {e}")
@@ -574,7 +493,7 @@ async def handle_admin_callback(update: Update, context: CallbackContext) -> Non
     
     elif data.startswith('premium_'):
         target_user_id = int(data.split('_')[1])
-        UserManager.approve_user(target_user_id)
+        UserService.approve_user(target_user_id)
         db.conn.execute('UPDATE users SET is_premium = 1 WHERE user_id = ?', (target_user_id,))
         db.conn.commit()
         
@@ -582,7 +501,7 @@ async def handle_admin_callback(update: Update, context: CallbackContext) -> Non
             await context.bot.send_message(
                 chat_id=target_user_id,
                 text="🎉 **تمت الموافقة على طلبك!**\n\n👑 **تم ترقيتك إلى عضوية مميزة!**\nاستمتع بجميع المزايا الحصرية.",
-                reply_markup=KeyboardManager.user_main_menu()
+                reply_markup=KeyboardService.user_main_menu()
             )
         except Exception as e:
             logger.error(f"خطأ في إرسال رسالة للمستخدم: {e}")
@@ -600,14 +519,14 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         await handle_admin_message(update, context)
         return
     
-    user_data = UserManager.get_user(user_id)
+    user_data = UserService.get_user(user_id)
     
     # إذا لم يكن المستخدم معتمداً
     if not user_data or not user_data['is_approved']:
         if text == "🔄 تحديث الحالة":
-            user_data = UserManager.get_user(user_id)
+            user_data = UserService.get_user(user_id)
             if user_data and user_data['is_approved']:
-                await MessageHandler.send_welcome_message(update, context, user_id)
+                await BotMessageService.send_welcome_message(update, context, user_id)
             else:
                 await update.message.reply_text("⏳ لا يزال طلبك قيد المراجعة...")
         else:
@@ -618,28 +537,27 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
     if text == "🏠 الرئيسية":
         await update.message.reply_text(
             "🏠 **الصفحة الرئيسية**",
-            reply_markup=KeyboardManager.user_main_menu(UserManager.get_user_stats(user_id))
+            reply_markup=KeyboardService.user_main_menu(UserService.get_user_stats(user_id))
         )
     
     elif text == "📚 اكتشف القصص":
-        categories = StoryManager.get_categories()
+        categories = StoryService.get_categories()
         if categories:
             await update.message.reply_text(
                 "📚 **اختر تصنيف القصص:**\n\nاستكشف عالمنا الرائع من القصص المتنوعة!",
-                reply_markup=KeyboardManager.user_categories_menu()
+                reply_markup=KeyboardService.user_categories_menu()
             )
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام متاحة حالياً.")
     
     elif text == "👤 الملف الشخصي":
-        stats = UserManager.get_user_stats(user_id)
+        stats = UserService.get_user_stats(user_id)
         if stats:
             profile_text = f"👤 **الملف الشخصي**\n\n"
             profile_text += f"🆔 **رقم العضوية:** {user_id}\n"
             profile_text += f"👤 **الاسم:** {user.first_name}\n"
             profile_text += f"💎 **العضوية:** {'مميز 👑' if stats['is_premium'] else 'عادي ⭐'}\n"
             profile_text += f"📖 **القصص المقروءة اليوم:** {stats['stories_read_today']}/{stats['daily_limit']}\n"
-            profile_text += f"❤️ **الإعجابات:** {stats['total_likes']}\n"
             profile_text += f"📅 **تاريخ الانضمام:** {stats['joined_date'][:10]}\n"
             
             await update.message.reply_text(profile_text)
@@ -652,10 +570,32 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         contact_text = db.get_setting('contact_text')
         await update.message.reply_text(contact_text, parse_mode='Markdown')
     
+    elif text == "⭐ المميزة":
+        stories = StoryService.get_featured_stories()
+        if stories:
+            stories_text = "⭐ **القصص المميزة:**\n\n"
+            for story in stories[:5]:
+                stories_text += f"🌟 {story['title']}\n"
+            await update.message.reply_text(stories_text)
+        else:
+            await update.message.reply_text("⚠️ لا توجد قصص مميزة حالياً.")
+    
     else:
+        # التحقق إذا كان النص هو اسم قسم
+        categories = StoryService.get_categories()
+        for category in categories:
+            if text == f"{category['icon']} {category['name']}":
+                stories = StoryService.get_stories_by_category(category['id'], user_data['is_premium'])
+                if stories:
+                    # إرسال أول قصة كمثال
+                    await BotMessageService.send_story(update, context, stories[0], user_id)
+                else:
+                    await update.message.reply_text(f"⚠️ لا توجد قصص في قسم {category['name']} حالياً.")
+                return
+        
         await update.message.reply_text(
             "❌ **لم أفهم طلبك**\n\nيرجى استخدام الأزرار المتاحة للتنقل.",
-            reply_markup=KeyboardManager.user_main_menu(UserManager.get_user_stats(user_id))
+            reply_markup=KeyboardService.user_main_menu(UserService.get_user_stats(user_id))
         )
 
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
@@ -667,7 +607,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     if text == "🔙 وضع المستخدم":
         await update.message.reply_text(
             "تم التبديل إلى وضع المستخدم",
-            reply_markup=KeyboardManager.user_main_menu()
+            reply_markup=KeyboardService.user_main_menu()
         )
         return
     
@@ -681,24 +621,35 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         stats_text += f"• 👥 المستخدمون: {users_count}\n"
         stats_text += f"• ⏳ في الانتظار: {pending_count}\n"
         stats_text += f"• 💎 المميزون: {premium_count}\n\n"
-        stats_text += f"🔧 **الأدوات:**\n"
-        stats_text += f"• 📋 عرض المستخدمين\n"
-        stats_text += f"• ⏳ طلبات الانضمام\n"
-        stats_text += f"• 💎 ترقية مستخدمين\n"
-        stats_text += f"• 🗑 حذف مستخدمين"
+        stats_text += f"🔧 **الأدوات المتاحة:**\n"
+        stats_text += f"• استخدم الأزرار في الأعلى للتحكم الكامل"
         
-        await update.message.reply_text(stats_text)
+        await update.message.reply_text(stats_text, reply_markup=KeyboardService.admin_main_menu())
     
     elif text == "⚙️ الإعدادات المتقدمة":
         await update.message.reply_text(
             "⚙️ **الإعدادات المتقدمة**\n\nاختر الإعداد الذي تريد تعديله:",
-            reply_markup=KeyboardManager.admin_settings_menu()
+            reply_markup=KeyboardService.admin_settings_menu()
         )
+    
+    elif text == "📊 الإحصائيات المتقدمة":
+        total_users = len(db.conn.execute('SELECT * FROM users WHERE is_approved = 1').fetchall())
+        total_stories = len(db.conn.execute('SELECT * FROM stories').fetchall())
+        total_categories = len(db.conn.execute('SELECT * FROM categories').fetchall())
+        
+        stats_text = f"📊 **الإحصائيات المتقدمة**\n\n"
+        stats_text += f"👥 **المستخدمون:** {total_users}\n"
+        stats_text += f"📚 **القصص:** {total_stories}\n"
+        stats_text += f"📁 **الأقسام:** {total_categories}\n"
+        stats_text += f"🔐 **نظام الموافقة:** {'مفعل' if db.get_setting('approval_required') else 'معطل'}\n"
+        stats_text += f"💎 **النظام المميز:** {'مفعل' if db.get_setting('premium_enabled') else 'معطل'}\n"
+        
+        await update.message.reply_text(stats_text)
     
     else:
         await update.message.reply_text(
             "👑 **لوحة تحكم المدير**\n\nاختر من الخيارات المتاحة:",
-            reply_markup=KeyboardManager.admin_main_menu()
+            reply_markup=KeyboardService.admin_main_menu()
         )
 
 async def error_handler(update: Update, context: CallbackContext) -> None:
