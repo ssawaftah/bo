@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# فئة قاعدة البيانات المطورة
+# فئة قاعدة البيانات
 class Database:
     def __init__(self):
         self.conn = sqlite3.connect('stories_bot.db', check_same_thread=False)
@@ -44,14 +44,14 @@ class Database:
             )
         ''')
 
-        # جدول القصص المطور
+        # جدول القصص
         self.conn.execute('''
             CREATE TABLE IF NOT EXISTS stories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
                 content TEXT,
-                content_type TEXT DEFAULT 'text', -- text, video, photo
-                file_id TEXT, -- لحفظ file_id للملفات
+                content_type TEXT DEFAULT 'text',
+                file_id TEXT,
                 category_id INTEGER,
                 created_by INTEGER,
                 created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -129,7 +129,7 @@ class Database:
         self.conn.execute('DELETE FROM stories WHERE category_id = ?', (category_id,))
         self.conn.commit()
 
-    # دوال القصص المطورة
+    # دوال القصص
     def add_story(self, title, content, content_type, file_id, category_id, created_by):
         self.conn.execute('''
             INSERT INTO stories (title, content, content_type, file_id, category_id, created_by)
@@ -205,7 +205,7 @@ def stories_keyboard(category_id):
     keyboard.append([KeyboardButton("🔙 رجوع")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# لوحات المفاتيح للمدير - المطورة
+# لوحات المفاتيح للمدير
 def admin_main_keyboard():
     keyboard = [
         [KeyboardButton("👥 إدارة المستخدمين"), KeyboardButton("📁 إدارة الأقسام")],
@@ -269,10 +269,21 @@ def admin_delete_stories_keyboard():
     keyboard.append([KeyboardButton("🔙 إدارة القصص")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def admin_delete_categories_keyboard():
+    categories = db.get_categories()
+    keyboard = []
+    for cat in categories:
+        keyboard.append([KeyboardButton(f"🗑 حذف {cat[1]}")])
+    keyboard.append([KeyboardButton("🔙 إدارة الأقسام")])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 # معالجة الأوامر للمستخدمين
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
+    
+    # تنظيف أي بيانات سابقة
+    context.user_data.clear()
     
     if user_id == get_admin_id():
         db.add_user(user_id, user.username, user.first_name, user.last_name, True, True)
@@ -367,21 +378,16 @@ async def handle_media(update: Update, context: CallbackContext) -> None:
         
         if content_type == 'video' and update.message.video:
             file_id = update.message.video.file_id
-            # حفظ القصة
             db.add_story(title, "فيديو", "video", file_id, category_id, user_id)
             await update.message.reply_text(f"✅ تم إضافة القصة الفيديوية: {title}", reply_markup=admin_stories_keyboard())
             
         elif content_type == 'photo' and update.message.photo:
             file_id = update.message.photo[-1].file_id
-            # حفظ القصة
             db.add_story(title, "صورة", "photo", file_id, category_id, user_id)
             await update.message.reply_text(f"✅ تم إضافة القصة المصورة: {title}", reply_markup=admin_stories_keyboard())
         
         # تنظيف البيانات المؤقتة
-        context.user_data.pop('adding_story', None)
-        context.user_data.pop('story_content_type', None)
-        context.user_data.pop('story_category_id', None)
-        context.user_data.pop('story_title', None)
+        context.user_data.clear()
 
 # معالجة الرسائل للمستخدمين
 async def handle_message(update: Update, context: CallbackContext) -> None:
@@ -443,17 +449,17 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
             all_stories = db.get_all_stories()
             for story in all_stories:
                 if story[1] == story_title:
-                    if story[3] == 'text':  # قصة نصية
+                    if story[3] == 'text':
                         await update.message.reply_text(f"📖 {story[1]}\n\n{story[2]}\n\n---\nنهاية القصة 📚")
-                    elif story[3] == 'video':  # فيديو
+                    elif story[3] == 'video':
                         await update.message.reply_video(story[4], caption=f"🎥 {story[1]}")
-                    elif story[3] == 'photo':  # صورة
+                    elif story[3] == 'photo':
                         await update.message.reply_photo(story[4], caption=f"🖼️ {story[1]}")
                     return
         
         await update.message.reply_text("⚠️ لم أفهم طلبك.", reply_markup=main_keyboard())
 
-# معالجة رسائل المدير المطورة
+# معالجة رسائل المدير - الإصدار المصحح
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -462,8 +468,14 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     if user_id != get_admin_id():
         await update.message.reply_text("❌ ليس لديك صلاحية للوصول إلى لوحة التحكم.")
         return
+
+    # تنظيف الحالات القديمة إذا كان المستخدم يبدأ من جديد
+    if text in ["🔙 لوحة التحكم", "🏠 الرئيسية"]:
+        context.user_data.clear()
+
+    # === معالجة حالات إدخال البيانات ===
     
-    # نظام إضافة القصص المحسن
+    # حالة إدخال عنوان القصة
     if context.user_data.get('awaiting_story_title'):
         title = text
         context.user_data['story_title'] = title
@@ -475,51 +487,160 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             await update.message.reply_text("📝 الآن أرسل محتوى القصة النصية:")
             context.user_data['awaiting_story_content'] = True
         else:
-            # للفيديو أو الصورة
             context.user_data['adding_story'] = True
             if content_type == 'video':
                 await update.message.reply_text("🎥 الآن أرسل الفيديو:")
             else:
                 await update.message.reply_text("🖼️ الآن أرسل الصورة:")
+        return
     
+    # حالة إدخال محتوى القصة النصية
     elif context.user_data.get('awaiting_story_content'):
         content = text
         title = context.user_data.get('story_title')
         category_id = context.user_data.get('story_category_id')
         
-        # حفظ القصة النصية
         db.add_story(title, content, 'text', None, category_id, user_id)
         await update.message.reply_text(f"✅ تم إضافة القصة: {title}", reply_markup=admin_stories_keyboard())
-        
-        # تنظيف البيانات
-        context.user_data.pop('awaiting_story_content', None)
-        context.user_data.pop('story_title', None)
-        context.user_data.pop('story_category_id', None)
-    
-    # الأوامر الرئيسية للمدير
-    elif text == "🔙 وضع المستخدم":
-        await update.message.reply_text("تم التبديل إلى وضع المستخدم", reply_markup=main_keyboard())
+        context.user_data.clear()
         return
     
+    # حالة إدخال اسم قسم جديد
+    elif context.user_data.get('awaiting_category_name'):
+        category_name = text
+        db.add_category(category_name, user_id)
+        await update.message.reply_text(f"✅ تم إضافة القسم: {category_name}", reply_markup=admin_categories_keyboard())
+        context.user_data.clear()
+        return
+    
+    # حالة إدخال ID مستخدم للحذف
+    elif context.user_data.get('awaiting_user_id'):
+        try:
+            target_user_id = int(text)
+            db.delete_user(target_user_id)
+            await update.message.reply_text(f"✅ تم حذف المستخدم {target_user_id}", reply_markup=admin_users_keyboard())
+        except:
+            await update.message.reply_text("❌ رقم ID غير صحيح", reply_markup=admin_users_keyboard())
+        context.user_data.clear()
+        return
+    
+    # حالة إدخال محتوى الإشعار
+    elif context.user_data.get('awaiting_broadcast'):
+        users = db.get_all_users()
+        success = 0
+        for user_data in users:
+            try:
+                await context.bot.send_message(chat_id=user_data[0], text=f"📢 إشعار من الإدارة:\n\n{text}")
+                success += 1
+            except:
+                continue
+        await update.message.reply_text(f"✅ تم إرسال الإشعار إلى {success} مستخدم", reply_markup=admin_main_keyboard())
+        context.user_data.clear()
+        return
+    
+    # حالة تعديل قصة
+    elif context.user_data.get('editing_story_id'):
+        story_id = context.user_data['editing_story_id']
+        db.update_story(story_id, db.get_story(story_id)[1], text)
+        await update.message.reply_text("✅ تم تعديل القصة بنجاح", reply_markup=admin_stories_keyboard())
+        context.user_data.clear()
+        return
+
+    # === الأوامر الرئيسية ===
+    
+    if text == "🔙 وضع المستخدم":
+        context.user_data.clear()
+        await update.message.reply_text("تم التبديل إلى وضع المستخدم", reply_markup=main_keyboard())
+    
     elif text == "👥 إدارة المستخدمين":
+        context.user_data.clear()
         await update.message.reply_text("👥 لوحة إدارة المستخدمين:", reply_markup=admin_users_keyboard())
     
     elif text == "📁 إدارة الأقسام":
+        context.user_data.clear()
         await update.message.reply_text("📁 لوحة إدارة الأقسام:", reply_markup=admin_categories_keyboard())
     
     elif text == "📖 إدارة القصص":
+        context.user_data.clear()
         await update.message.reply_text("📖 لوحة إدارة القصص:", reply_markup=admin_stories_keyboard())
     
     elif text == "🔙 لوحة التحكم":
+        context.user_data.clear()
         await update.message.reply_text("👑 لوحة تحكم المدير", reply_markup=admin_main_keyboard())
     
-    elif text == "🔙 إدارة القصص":
-        await update.message.reply_text("📖 لوحة إدارة القصص:", reply_markup=admin_stories_keyboard())
+    elif text == "📊 إحصائيات":
+        users_count = len(db.get_all_users())
+        categories_count = len(db.get_categories())
+        stories_count = len(db.get_all_stories())
+        pending_count = len(db.get_pending_requests())
+        
+        stats_text = f"""
+📊 إحصائيات البوت:
+
+👥 عدد المستخدمين: {users_count}
+⏳ طلبات معلقة: {pending_count}
+📁 عدد الأقسام: {categories_count}
+📖 عدد القصص: {stories_count}
+        """
+        await update.message.reply_text(stats_text)
     
-    elif text == "🔙 إضافة قصة":
-        await update.message.reply_text("📖 اختر نوع القصة:", reply_markup=admin_story_type_keyboard())
+    # === إدارة المستخدمين ===
+    elif text == "📋 عرض المستخدمين":
+        users = db.get_all_users()
+        if users:
+            users_text = "👥 قائمة المستخدمين:\n\n"
+            for user_data in users:
+                users_text += f"🆔 {user_data[0]} - 👤 {user_data[2]} - 📱 @{user_data[1] or 'لا يوجد'}\n"
+            await update.message.reply_text(users_text)
+        else:
+            await update.message.reply_text("⚠️ لا يوجد مستخدمين.")
     
-    # إدارة القصص - النظام الجديد
+    elif text == "⏳ طلبات الانضمام":
+        requests = db.get_pending_requests()
+        if requests:
+            req_text = "📩 طلبات الانضمام المعلقة:\n\n"
+            for req in requests:
+                req_text += f"🆔 {req[0]} - 👤 {req[2]} - 📱 @{req[1] or 'لا يوجد'}\n"
+            await update.message.reply_text(req_text)
+        else:
+            await update.message.reply_text("✅ لا توجد طلبات انضمام معلقة.")
+    
+    elif text == "🗑 حذف مستخدم":
+        await update.message.reply_text("أرسل رقم ID المستخدم الذي تريد حذفه:")
+        context.user_data['awaiting_user_id'] = True
+    
+    # === إدارة الأقسام ===
+    elif text == "📋 عرض الأقسام":
+        categories = db.get_categories()
+        if categories:
+            cats_text = "📁 الأقسام المتاحة:\n\n"
+            for cat in categories:
+                cats_text += f"📂 {cat[1]} (ID: {cat[0]})\n"
+            await update.message.reply_text(cats_text)
+        else:
+            await update.message.reply_text("⚠️ لا توجد أقسام.")
+    
+    elif text == "➕ إضافة قسم":
+        await update.message.reply_text("أرسل اسم القسم الجديد:")
+        context.user_data['awaiting_category_name'] = True
+    
+    elif text == "🗑 حذف قسم":
+        categories = db.get_categories()
+        if categories:
+            await update.message.reply_text("📁 اختر القسم للحذف:", reply_markup=admin_delete_categories_keyboard())
+        else:
+            await update.message.reply_text("⚠️ لا توجد أقسام.")
+    
+    elif text.startswith("🗑 حذف "):
+        category_name = text.replace("🗑 حذف ", "")
+        category_id = get_category_id_by_name(category_name)
+        if category_id:
+            db.delete_category(category_id)
+            await update.message.reply_text(f"✅ تم حذف القسم: {category_name}", reply_markup=admin_categories_keyboard())
+        else:
+            await update.message.reply_text("❌ قسم غير موجود")
+    
+    # === إدارة القصص ===
     elif text == "➕ إضافة قصة":
         categories = db.get_categories()
         if not categories:
@@ -536,19 +657,14 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         else:
             await update.message.reply_text("❌ قسم غير موجود")
     
-    elif text == "📝 قصة نصية":
-        context.user_data['story_content_type'] = 'text'
-        await update.message.reply_text("📝 أرسل عنوان القصة:")
-        context.user_data['awaiting_story_title'] = True
-    
-    elif text == "🎥 قصة فيديو":
-        context.user_data['story_content_type'] = 'video'
-        await update.message.reply_text("🎥 أرسل عنوان الفيديو:")
-        context.user_data['awaiting_story_title'] = True
-    
-    elif text == "🖼️ قصة صورة":
-        context.user_data['story_content_type'] = 'photo'
-        await update.message.reply_text("🖼️ أرسل عنوان الصورة:")
+    elif text in ["📝 قصة نصية", "🎥 قصة فيديو", "🖼️ قصة صورة"]:
+        content_type_map = {
+            "📝 قصة نصية": "text",
+            "🎥 قصة فيديو": "video", 
+            "🖼️ قصة صورة": "photo"
+        }
+        context.user_data['story_content_type'] = content_type_map[text]
+        await update.message.reply_text("أرسل عنوان القصة:")
         context.user_data['awaiting_story_title'] = True
     
     elif text == "🗑 حذف قصة":
@@ -559,6 +675,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             await update.message.reply_text("⚠️ لا توجد قصص.")
     
     elif text.startswith("🗑 "):
+        # معالجة حذف القصة
         story_title = text.replace("🗑 ", "").split(" - ")[0]
         stories = db.get_all_stories()
         for story in stories:
@@ -588,13 +705,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
                 return
         await update.message.reply_text("❌ قصة غير موجودة")
     
-    elif context.user_data.get('editing_story_id'):
-        story_id = context.user_data['editing_story_id']
-        db.update_story(story_id, db.get_story(story_id)[1], text)  # الحفاظ على العنوان نفسه
-        await update.message.reply_text("✅ تم تعديل القصة بنجاح", reply_markup=admin_stories_keyboard())
-        context.user_data.pop('editing_story_id', None)
-    
-    # باقي أوامر المدير (نفس السابق)
     elif text == "📋 عرض القصص":
         stories = db.get_all_stories()
         if stories:
@@ -606,7 +716,9 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         else:
             await update.message.reply_text("⚠️ لا توجد قصص.")
     
-    # ... باقي الأوامر نفس الكود السابق
+    elif text == "📢 إرسال إشعار":
+        await update.message.reply_text("أرسل الرسالة التي تريد إرسالها لجميع المستخدمين:")
+        context.user_data['awaiting_broadcast'] = True
     
     else:
         await update.message.reply_text("👑 لوحة تحكم المدير", reply_markup=admin_main_keyboard())
@@ -630,7 +742,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_admin_callback))
     application.add_error_handler(error_handler)
     
-    logger.info("🚀 بدء تشغيل البوت الاحترافي المطور...")
+    logger.info("🚀 بدء تشغيل البوت الاحترافي المصحح...")
     application.run_polling()
 
 if __name__ == '__main__':
