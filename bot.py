@@ -2,34 +2,43 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-API_TOKEN = "8380344606:AAH-23GbbdbRdwG6rnJmJ9UfRZ7X7uh2tE0"
+API_TOKEN = "8380344606:AAH-23GbbdbRdwG6rnJmJ9UfRZ7X7uh2tE0"  # ضع توكن البوت هنا
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 # بيانات وهمية للقصص
 stories = {
-    "خرافات": {"الثعلب والمكعب": "كان يا مكان...", "الأرنب والسلحفاة": "في قديم الزمان..."},
-    "حكايات": {"القمر والعصفور": "ذات يوم..."}
+    "خرافات": {
+        "الثعلب والمكعب": "كان يا مكان...",
+        "الأرنب والسلحفاة": "في قديم الزمان..."
+    },
+    "حكايات": {
+        "القمر والعصفور": "ذات يوم..."
+    }
 }
 
+# زر الصفحة الرئيسية
 def main_menu():
     kb = InlineKeyboardMarkup()
     for section in stories.keys():
         kb.add(InlineKeyboardButton(section, callback_data=f"section_{section}"))
     return kb
 
+# زر الرجوع
 def back_button(to="main"):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("رجوع", callback_data=f"back_{to}"))
     return kb
 
+# رسالة البدء
 @dp.message()
-async def start(message: types.Message):
+async def handle_message(message: types.Message):
     if message.text == "/start":
         await message.answer("أهلاً بك في بوت القصص!", reply_markup=main_menu())
 
+# التعامل مع أزرار القصص
 @dp.callback_query()
-async def callbacks(call: types.CallbackQuery):
+async def handle_callbacks(call: types.CallbackQuery):
     data = call.data
     if data.startswith("section_"):
         section = data.split("_")[1]
@@ -38,9 +47,11 @@ async def callbacks(call: types.CallbackQuery):
             kb.add(InlineKeyboardButton(title, callback_data=f"story_{section}_{title}"))
         kb.add(InlineKeyboardButton("رجوع", callback_data="back_main"))
         await call.message.edit_text(f"قسم {section}:", reply_markup=kb)
+
     elif data.startswith("story_"):
         _, section, title = data.split("_")
         await call.message.edit_text(stories[section][title], reply_markup=back_button(to=section))
+
     elif data.startswith("back_"):
         target = data.split("_")[1]
         if target == "main":
@@ -52,5 +63,6 @@ async def callbacks(call: types.CallbackQuery):
             kb.add(InlineKeyboardButton("رجوع", callback_data="back_main"))
             await call.message.edit_text(f"قسم {target}:", reply_markup=kb)
 
+# تشغيل البوت
 if __name__ == "__main__":
     asyncio.run(dp.start_polling(bot))
