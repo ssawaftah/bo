@@ -1,8 +1,13 @@
 import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
 
-API_TOKEN = "8380344606:AAH-23GbbdbRdwG6rnJmJ9UfRZ7X7uh2tE0"  # ضع توكن البوت هنا
+# توكن البوت من متغير البيئة
+API_TOKEN = os.getenv("API_TOKEN")
+if not API_TOKEN:
+    raise ValueError("API_TOKEN not set in environment variables!")
+
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
