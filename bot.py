@@ -155,6 +155,21 @@ class Database:
 # إنشاء قاعدة البيانات
 db = Database()
 
+# دوال المساعدة - تم التصحيح هنا
+def is_admin(user_id):
+    user = db.get_user(user_id)
+    return user and user[5] == 1  # العمود 5 هو is_admin
+
+def get_admin_id():
+    return int(os.getenv('ADMIN_ID', 123456789))
+
+def get_category_id_by_name(name):
+    categories = db.get_categories()
+    for cat in categories:
+        if cat[1] == name:
+            return cat[0]
+    return None
+
 # لوحات المفاتيح للمستخدم العادي
 def main_keyboard():
     keyboard = [
@@ -212,22 +227,19 @@ def admin_stories_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# دوال المساعدة
-def is_admin(user_id):
-    user = db.get_user(user_id)
-    return user and user[5] == 1  # العمود 5 هو is_admin
-
-def get_category_id_by_name(name):
-    categories = db.get_categories()
-    for cat in categories:
-        if cat[1] == name:
-            return cat[0]
-    return None
-
 # معالجة الأوامر للمستخدمين
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
+    
+    # إذا كان المدير نفسه
+    if user_id == get_admin_id():
+        db.add_user(user_id, user.username, user.first_name, user.last_name, True, True)
+        await update.message.reply_text(
+            f"مرحباً آلة المدير {user.first_name}! 👑",
+            reply_markup=admin_main_keyboard()
+        )
+        return
     
     # إضافة المستخدم إلى قاعدة البيانات
     db.add_user(user_id, user.username, user.first_name, user.last_name)
@@ -235,20 +247,11 @@ async def start(update: Update, context: CallbackContext) -> None:
     user_data = db.get_user(user_id)
     
     if user_data and user_data[4] == 1:  # إذا كان مفعل
-        if is_admin(user_id):
-            await update.message.reply_text(
-                f"مرحباً kembali آلة المدير {user.first_name}! 👑",
-                reply_markup=admin_main_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                f"مرحباً kembali {user.first_name}! 👋",
-                reply_markup=main_keyboard()
-            )
+        await update.message.reply_text(
+            f"مرحباً kembali {user.first_name}! 👋",
+            reply_markup=main_keyboard()
+        )
     else:
-        # إرسال طلب انضمام للمدير
-        admin_id = int(os.getenv('ADMIN_ID', 123456789))
-        
         # حفظ طلب الانضمام
         db.conn.execute('''
             INSERT OR REPLACE INTO join_requests (user_id, username, first_name, last_name)
@@ -257,6 +260,7 @@ async def start(update: Update, context: CallbackContext) -> None:
         db.conn.commit()
         
         # إرسال رسالة للمدير
+        admin_id = get_admin_id()
         keyboard = [
             [
                 InlineKeyboardButton("✅ الموافقة", callback_data=f"approve_{user_id}"),
@@ -271,14 +275,14 @@ async def start(update: Update, context: CallbackContext) -> None:
                 text=f"📩 طلب انضمام جديد:\n\n👤 الاسم: {user.first_name} {user.last_name or ''}\n📱 username: @{user.username or 'لا يوجد'}\n🆔 ID: {user_id}",
                 reply_markup=reply_markup
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"خطأ في إرسال الرسالة للمدير: {e}")
         
         await update.message.reply_text(
             "📋 تم إرسال طلب انضمامك إلى المدير. ستصلك رسالة تأكيد عند الموافقة على طلبك."
         )
 
-# معالجة ضغطات الأزرار للمدير
+# معالجة ضغطات الأزرار للمدير - تم التصحيح هنا
 async def handle_admin_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await query.answer()
@@ -286,7 +290,8 @@ async def handle_admin_callback(update: Update, context: CallbackContext) -> Non
     data = query.data
     user_id = query.from_user.id
     
-    if not is_admin(user_id):
+    # التحقق من أن المستخدم هو المدير
+    if user_id != get_admin_id():
         await query.edit_message_text("❌ ليس لديك صلاحية للقيام بهذا الإجراء.")
         return
     
@@ -301,8 +306,8 @@ async def handle_admin_callback(update: Update, context: CallbackContext) -> Non
                 text="🎉 تمت الموافقة على طلب انضمامك!\n\nانقر على الزر أدناه لبدء الاستخدام:",
                 reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🚀 بدء الاستخدام")]], resize_keyboard=True)
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"خطأ في إرسال رسالة للمستخدم: {e}")
         
         await query.edit_message_text(f"✅ تمت الموافقة على المستخدم {target_user_id}")
         
@@ -317,19 +322,18 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
     text = update.message.text
     user_id = user.id
     
+    # إذا كان المدير
+    if user_id == get_admin_id():
+        await handle_admin_message(update, context)
+        return
+    
     user_data = db.get_user(user_id)
     if not user_data or user_data[4] == 0:
         if text == "🚀 بدء الاستخدام":
             db.approve_user(user_id)
-            if is_admin(user_id):
-                await update.message.reply_text("مرحباً آلة المدير! 👑", reply_markup=admin_main_keyboard())
-            else:
-                await update.message.reply_text("أهلاً وسهلاً! 🌟", reply_markup=main_keyboard())
-        return
-    
-    # إذا كان مديراً
-    if is_admin(user_id):
-        await handle_admin_message(update, context)
+            await update.message.reply_text("🎉 أهلاً وسهلاً! تم تفعيل حسابك.", reply_markup=main_keyboard())
+        else:
+            await update.message.reply_text("⏳ لم يتم الموافقة على حسابك بعد. انتظر الموافقة من المدير.")
         return
     
     # معالجة رسائل المستخدم العادي
@@ -381,6 +385,11 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     text = update.message.text
     user_id = user.id
     
+    # التأكد من أن المستخدم هو المدير
+    if user_id != get_admin_id():
+        await update.message.reply_text("❌ ليس لديك صلاحية للوصول إلى لوحة التحكم.")
+        return
+    
     # الأوامر الرئيسية للمدير
     if text == "🔙 وضع المستخدم":
         await update.message.reply_text("تم التبديل إلى وضع المستخدم", reply_markup=main_keyboard())
@@ -412,12 +421,12 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     elif text == "⏳ طلبات الانضمام":
         requests = db.get_pending_requests()
         if requests:
-            req_text = "📩 طلبات الانضمام pending:\n\n"
+            req_text = "📩 طلبات الانضمام المعلقة:\n\n"
             for req in requests:
                 req_text += f"🆔 {req[0]} - 👤 {req[2]} - 📱 @{req[1] or 'لا يوجد'}\n"
             await update.message.reply_text(req_text)
         else:
-            await update.message.reply_text("✅ لا توجد طلبات انضمام pending.")
+            await update.message.reply_text("✅ لا توجد طلبات انضمام معلقة.")
     
     elif text == "🗑 حذف مستخدم":
         await update.message.reply_text("أرسل رقم ID المستخدم الذي تريد حذفه:")
@@ -488,7 +497,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
 📊 إحصائيات البوت:
 
 👥 عدد المستخدمين: {users_count}
-⏳ طلبات pending: {pending_count}
+⏳ طلبات معلقة: {pending_count}
 📁 عدد الأقسام: {categories_count}
 📖 عدد القصص: {stories_count}
         """
