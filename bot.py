@@ -41,7 +41,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE,
-                is_premium_category INTEGER DEFAULT 0,
+                is_premium INTEGER DEFAULT 0,
                 created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -78,16 +78,6 @@ class Database:
                 value TEXT
             )
         ''')
-
-        # جدول الأقسام المميزة
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS premium_sections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category_id INTEGER,
-                section_name TEXT,
-                created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
         self.conn.commit()
 
     def create_admin(self):
@@ -107,7 +97,7 @@ class Database:
             ('start_button_text', '🚀 ابدأ الرحلة'),
             ('auto_approve', '0'),
             ('premium_enabled', '1'),
-            ('premium_section_name', '⭐ المحتوى المميز'),
+            ('premium_section_name', '👑 قسم المميز'),
             ('premium_access_message', '🔒 هذا المحتوى متاح للأعضاء المميزين فقط.\n\n💎 لترقية حسابك، تواصل مع الإدارة.'),
             ('broadcast_notification_text', '📢 إشعار من الإدارة'),
             ('admin_contact', '@username')
@@ -181,9 +171,13 @@ class Database:
         self.conn.execute('UPDATE users SET is_premium = 0 WHERE user_id = ?', (user_id,))
         self.conn.commit()
 
-    def add_category(self, name, is_premium_category=False):
-        self.conn.execute('INSERT OR IGNORE INTO categories (name, is_premium_category) VALUES (?, ?)', 
-                         (name, 1 if is_premium_category else 0))
+    def get_premium_users(self):
+        cursor = self.conn.execute('SELECT * FROM users WHERE is_premium = 1 AND is_approved = 1')
+        return cursor.fetchall()
+
+    def add_category(self, name, is_premium=False):
+        self.conn.execute('INSERT OR IGNORE INTO categories (name, is_premium) VALUES (?, ?)', 
+                         (name, 1 if is_premium else 0))
         self.conn.commit()
 
     def get_categories(self):
@@ -191,16 +185,16 @@ class Database:
         return cursor.fetchall()
 
     def get_normal_categories(self):
-        cursor = self.conn.execute('SELECT * FROM categories WHERE is_premium_category = 0 ORDER BY name')
+        cursor = self.conn.execute('SELECT * FROM categories WHERE is_premium = 0 ORDER BY name')
         return cursor.fetchall()
 
     def get_premium_categories(self):
-        cursor = self.conn.execute('SELECT * FROM categories WHERE is_premium_category = 1 ORDER BY name')
+        cursor = self.conn.execute('SELECT * FROM categories WHERE is_premium = 1 ORDER BY name')
         return cursor.fetchall()
 
-    def update_category(self, category_id, name, is_premium_category):
-        self.conn.execute('UPDATE categories SET name = ?, is_premium_category = ? WHERE id = ?', 
-                         (name, is_premium_category, category_id))
+    def update_category(self, category_id, name, is_premium):
+        self.conn.execute('UPDATE categories SET name = ?, is_premium = ? WHERE id = ?', 
+                         (name, is_premium, category_id))
         self.conn.commit()
 
     def delete_category(self, category_id):
@@ -219,10 +213,6 @@ class Database:
         cursor = self.conn.execute('SELECT * FROM content WHERE category_id = ? ORDER BY created_date DESC', (category_id,))
         return cursor.fetchall()
 
-    def get_premium_content(self):
-        cursor = self.conn.execute('SELECT * FROM content WHERE is_premium = 1 ORDER BY created_date DESC')
-        return cursor.fetchall()
-
     def get_all_content(self):
         cursor = self.conn.execute('''
             SELECT c.*, cat.name as category_name 
@@ -239,23 +229,6 @@ class Database:
         cursor = self.conn.execute('SELECT * FROM content WHERE id = ?', (content_id,))
         return cursor.fetchone()
 
-    def add_premium_section(self, category_id, section_name):
-        self.conn.execute('INSERT OR IGNORE INTO premium_sections (category_id, section_name) VALUES (?, ?)', 
-                         (category_id, section_name))
-        self.conn.commit()
-
-    def get_premium_sections(self):
-        cursor = self.conn.execute('''
-            SELECT ps.*, c.name as category_name 
-            FROM premium_sections ps 
-            JOIN categories c ON ps.category_id = c.id
-        ''')
-        return cursor.fetchall()
-
-    def delete_premium_section(self, section_id):
-        self.conn.execute('DELETE FROM premium_sections WHERE id = ?', (section_id,))
-        self.conn.commit()
-
 db = Database()
 
 def get_admin_id():
@@ -271,11 +244,11 @@ def get_category_id_by_name(name):
             return cat[0]
     return None
 
-# لوحات المفاتيح للمستخدم - محسنة حسب المتطلبات
+# لوحات المفاتيح للمستخدم - محسنة
 def user_main_menu():
-    premium_section_name = db.get_setting('premium_section_name') or '⭐ المحتوى المميز'
+    premium_section_name = db.get_setting('premium_section_name') or '👑 قسم المميز'
     keyboard = [
-        [KeyboardButton("📁 أقسام البوت"), KeyboardButton(premium_section_name)],
+        [KeyboardButton("📁 الاقسام"), KeyboardButton(premium_section_name)],
         [KeyboardButton("👤 الملف الشخصي"), KeyboardButton("ℹ️ حول البوت")],
         [KeyboardButton("📞 اتصل بنا")]
     ]
@@ -284,34 +257,49 @@ def user_main_menu():
 def user_categories_menu():
     categories = db.get_normal_categories()
     keyboard = []
-    for cat in categories:
-        keyboard.append([KeyboardButton(cat[1])])
+    row = []
+    for i, cat in enumerate(categories):
+        row.append(KeyboardButton(cat[1]))
+        if len(row) == 2 or i == len(categories) - 1:
+            keyboard.append(row)
+            row = []
     keyboard.append([KeyboardButton("🏠 الرئيسية")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def user_premium_sections_menu():
-    premium_sections = db.get_premium_sections()
+def user_premium_categories_menu():
+    categories = db.get_premium_categories()
     keyboard = []
-    for section in premium_sections:
-        keyboard.append([KeyboardButton(section[2])])  # section_name
+    row = []
+    for i, cat in enumerate(categories):
+        row.append(KeyboardButton(cat[1]))
+        if len(row) == 2 or i == len(categories) - 1:
+            keyboard.append(row)
+            row = []
     keyboard.append([KeyboardButton("🏠 الرئيسية")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def user_content_menu(category_id):
+def user_content_menu(category_name, category_id):
     content_items = db.get_content_by_category(category_id)
     keyboard = []
-    for content in content_items:
-        keyboard.append([KeyboardButton(f"📄 {content[1]}")])  # title
-    keyboard.append([KeyboardButton("🔙 رجوع")])
+    row = []
+    for i, content in enumerate(content_items):
+        # عرض أول 15 حرفاً من العنوان لتجنب ازدحام الأزرار
+        short_title = content[1][:15] + "..." if len(content[1]) > 15 else content[1]
+        row.append(KeyboardButton(f"📄 {short_title}"))
+        if len(row) == 2 or i == len(content_items) - 1:
+            keyboard.append(row)
+            row = []
+    keyboard.append([KeyboardButton(f"🔙 رجوع إلى {category_name}")])
+    keyboard.append([KeyboardButton("🏠 الرئيسية")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# لوحات المفاتيح للمدير - محسنة
+# لوحات المفاتيح للمدير
 def admin_main_menu():
     keyboard = [
         [KeyboardButton("👥 إدارة المستخدمين"), KeyboardButton("📁 إدارة الأقسام")],
         [KeyboardButton("📦 إدارة المحتوى"), KeyboardButton("⚙️ إعدادات البوت")],
         [KeyboardButton("📊 الإحصائيات"), KeyboardButton("📢 البث الجماعي")],
-        [KeyboardButton("🎯 إدارة المميزين"), KeyboardButton("🔧 الأقسام المميزة")],
+        [KeyboardButton("🎯 إدارة المميزين")],
         [KeyboardButton("🔙 وضع المستخدم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -319,8 +307,8 @@ def admin_main_menu():
 def admin_users_menu():
     keyboard = [
         [KeyboardButton("📋 عرض المستخدمين"), KeyboardButton("⏳ طلبات الانضمام")],
-        [KeyboardButton("💎 ترقية مستخدم"), KeyboardButton("🗑 حذف مستخدم")],
-        [KeyboardButton("🔙 لوحة التحكم")]
+        [KeyboardButton("💎 ترقية مستخدم"), KeyboardButton("🔻 إزالة التميز")],
+        [KeyboardButton("🗑 حذف مستخدم"), KeyboardButton("🔙 لوحة التحكم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -328,23 +316,23 @@ def admin_categories_menu():
     keyboard = [
         [KeyboardButton("➕ إضافة قسم"), KeyboardButton("✏️ تعديل قسم")],
         [KeyboardButton("🗑 حذف قسم"), KeyboardButton("📋 عرض الأقسام")],
-        [KeyboardButton("🔙 لوحة التحكم")]
+        [KeyboardButton("🔧 جعل قسم مميز"), KeyboardButton("🔙 لوحة التحكم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def admin_content_menu():
     keyboard = [
-        [KeyboardButton("➕ إضافة محتوى"), KeyboardButton("✏️ تعديل محتوى")],
-        [KeyboardButton("🗑 حذف محتوى"), KeyboardButton("📋 عرض المحتوى")],
+        [KeyboardButton("➕ إضافة محتوى"), KeyboardButton("🗑 حذف محتوى")],
+        [KeyboardButton("📋 عرض المحتوى"), KeyboardButton("🔧 جعل محتوى مميز")],
         [KeyboardButton("🔙 لوحة التحكم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def admin_premium_sections_menu():
+def admin_premium_menu():
     keyboard = [
-        [KeyboardButton("➕ إضافة قسم مميز"), KeyboardButton("🗑 حذف قسم مميز")],
-        [KeyboardButton("📋 عرض الأقسام المميزة"), KeyboardButton("✏️ تعديل اسم القسم المميز")],
-        [KeyboardButton("🔙 لوحة التحكم")]
+        [KeyboardButton("👑 عرض المميزين"), KeyboardButton("💎 ترقية مستخدم")],
+        [KeyboardButton("🔻 إزالة التميز"), KeyboardButton("📊 إحصائيات المميزين")],
+        [KeyboardButton("✏️ تعديل رسالة المميزين"), KeyboardButton("🔙 لوحة التحكم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -353,11 +341,11 @@ def admin_settings_menu():
         [KeyboardButton("✏️ رسالة الترحيب"), KeyboardButton("📝 حول البوت")],
         [KeyboardButton("📞 اتصل بنا"), KeyboardButton("🔄 زر البدء")],
         [KeyboardButton("🔐 نظام الموافقة"), KeyboardButton("🎯 إعدادات المميزين")],
-        [KeyboardButton("🔙 لوحة التحكم")]
+        [KeyboardButton("✏️ اسم قسم المميز"), KeyboardButton("🔙 لوحة التحكم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# معالجة START - محسنة
+# معالجة START
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
@@ -378,7 +366,6 @@ async def start(update: Update, context: CallbackContext) -> None:
     auto_approve = db.get_setting('auto_approve') == '1'
     approval_required = db.get_setting('approval_required') == '1'
     
-    # الموافقة التلقائية
     if auto_approve and not user_data[4]:
         db.approve_user(user_id)
         user_data = db.get_user(user_id)
@@ -390,7 +377,6 @@ async def start(update: Update, context: CallbackContext) -> None:
             reply_markup=user_main_menu()
         )
     elif not approval_required:
-        # إذا لم يكن نظام الموافقة مفعل
         db.approve_user(user_id)
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
@@ -398,7 +384,6 @@ async def start(update: Update, context: CallbackContext) -> None:
             reply_markup=user_main_menu()
         )
     else:
-        # إرسال طلب انضمام للمدير
         db.conn.execute('INSERT OR REPLACE INTO join_requests (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)',
                        (user_id, user.username, user.first_name, user.last_name))
         db.conn.commit()
@@ -455,7 +440,7 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
         db.reject_user(target_user_id)
         await query.edit_message_text(f"❌ تم رفض طلب المستخدم {target_user_id}")
 
-# معالجة رسائل المستخدمين - محسنة تماماً
+# معالجة رسائل المستخدمين
 async def handle_user_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -477,22 +462,22 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
                 await update.message.reply_text("⏳ لا يزال طلبك قيد المراجعة...")
         return
     
-    # معالجة أوامر المستخدم الرئيسية
+    # معالجة الأوامر الرئيسية
     if text == "🏠 الرئيسية":
         await update.message.reply_text("🏠 الرئيسية", reply_markup=user_main_menu())
     
-    elif text == "📁 أقسام البوت":
+    elif text == "📁 الاقسام":
         categories = db.get_normal_categories()
         if categories:
-            await update.message.reply_text("📁 اختر قسم:", reply_markup=user_categories_menu())
+            await update.message.reply_text("📁 **الاقسام المتاحة:**\n\nاختر قسم:", reply_markup=user_categories_menu())
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام متاحة حالياً.")
     
-    elif text == db.get_setting('premium_section_name') or text == "⭐ المحتوى المميز":
+    elif text == db.get_setting('premium_section_name') or text == "👑 قسم المميز":
         if user_data[6] == 1:
-            premium_sections = db.get_premium_sections()
-            if premium_sections:
-                await update.message.reply_text("👑 الأقسام المميزة:", reply_markup=user_premium_sections_menu())
+            categories = db.get_premium_categories()
+            if categories:
+                await update.message.reply_text("👑 **الأقسام المميزة:**\n\nاختر قسم:", reply_markup=user_premium_categories_menu())
             else:
                 await update.message.reply_text("⚠️ لا توجد أقسام مميزة حالياً.")
         else:
@@ -519,49 +504,49 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         contact_text = db.get_setting('contact_text')
         await update.message.reply_text(contact_text)
     
-    elif text == "🔙 رجوع":
-        await update.message.reply_text("🏠 الرئيسية", reply_markup=user_main_menu())
+    elif text.startswith("🔙 رجوع إلى "):
+        category_name = text[13:]  # إزالة "🔙 رجوع إلى "
+        category_id = get_category_id_by_name(category_name)
+        if category_id:
+            content_items = db.get_content_by_category(category_id)
+            if content_items:
+                await update.message.reply_text(
+                    f"📁 قسم: {category_name}\n\nاختر المحتوى:",
+                    reply_markup=user_content_menu(category_name, category_id)
+                )
+            else:
+                await update.message.reply_text(f"⚠️ لا يوجد محتوى في قسم {category_name}.")
+        else:
+            await update.message.reply_text("🏠 الرئيسية", reply_markup=user_main_menu())
     
     else:
-        # التحقق إذا كان النص هو اسم قسم عادي
+        # التحقق إذا كان النص هو اسم قسم
         category_id = get_category_id_by_name(text)
         if category_id:
             category_data = next((cat for cat in db.get_categories() if cat[0] == category_id), None)
-            if category_data and category_data[2] == 0:  # قسم عادي
+            if category_data:
+                # التحقق إذا كان القسم مميزاً والمستخدم ليس مميزاً
+                if category_data[2] == 1 and user_data[6] == 0:
+                    premium_message = db.get_setting('premium_access_message')
+                    await update.message.reply_text(premium_message)
+                    return
+                
                 content_items = db.get_content_by_category(category_id)
                 if content_items:
                     await update.message.reply_text(
                         f"📁 قسم: {text}\n\nاختر المحتوى:",
-                        reply_markup=user_content_menu(category_id)
+                        reply_markup=user_content_menu(text, category_id)
                     )
                 else:
                     await update.message.reply_text(f"⚠️ لا يوجد محتوى في قسم {text}.")
-                return
-        
-        # التحقق إذا كان النص هو اسم قسم مميز
-        premium_sections = db.get_premium_sections()
-        for section in premium_sections:
-            if section[2] == text:  # section_name
-                if user_data[6] == 1:
-                    content_items = db.get_content_by_category(section[1])  # category_id
-                    if content_items:
-                        await update.message.reply_text(
-                            f"👑 قسم: {text}\n\nاختر المحتوى:",
-                            reply_markup=user_content_menu(section[1])
-                        )
-                    else:
-                        await update.message.reply_text(f"⚠️ لا يوجد محتوى في قسم {text}.")
-                else:
-                    premium_message = db.get_setting('premium_access_message')
-                    await update.message.reply_text(premium_message)
-                return
+            return
         
         # التحقق إذا كان النص هو عنوان محتوى
         if text.startswith("📄 "):
             content_title = text[2:]  # إزالة الإيموجي
             all_content = db.get_all_content()
             for content in all_content:
-                if content[1] == content_title:  # title
+                if content[1].startswith(content_title):  # مطابقة الجزء الأول من العنوان
                     # التحقق إذا كان المحتوى مميزاً
                     if content[5] == 1 and user_data[6] == 0:
                         premium_message = db.get_setting('premium_access_message')
@@ -569,16 +554,16 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
                         return
                     
                     # إرسال المحتوى
-                    if content[3] == 'text':  # content_type
+                    if content[3] == 'text':
                         await update.message.reply_text(
                             f"📖 **{content[1]}**\n\n{content[2]}\n\n---\nنهاية المحتوى 📚"
                         )
-                    elif content[3] == 'photo' and content[6]:  # file_id
+                    elif content[3] == 'photo' and content[6]:
                         await update.message.reply_photo(
                             photo=content[6],
                             caption=f"📸 **{content[1]}**\n\n{content[2]}"
                         )
-                    elif content[3] == 'video' and content[6]:  # file_id
+                    elif content[3] == 'video' and content[6]:
                         await update.message.reply_video(
                             video=content[6],
                             caption=f"🎥 **{content[1]}**\n\n{content[2]}"
@@ -591,7 +576,7 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         
         await update.message.reply_text("❌ لم أفهم طلبك.", reply_markup=user_main_menu())
 
-# معالجة الوسائط (صور، فيديو) - جديدة
+# معالجة الوسائط
 async def handle_media(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
@@ -599,7 +584,6 @@ async def handle_media(update: Update, context: CallbackContext) -> None:
     if not is_admin(user_id):
         return
     
-    # إذا كان المدير يضيف محتوى
     if context.user_data.get('adding_content'):
         content_type = None
         file_id = None
@@ -617,7 +601,7 @@ async def handle_media(update: Update, context: CallbackContext) -> None:
             await update.message.reply_text("✅ تم استلام الملف. الآن أرسل وصف المحتوى:")
             context.user_data['awaiting_content_description'] = True
 
-# معالجة رسائل المدير - محسنة بالكامل
+# معالجة رسائل المدير
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -628,11 +612,9 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
 
     db.update_user_activity(user_id)
 
-    # تنظيف الحالات
     if text in ["🔙 لوحة التحكم", "🏠 الرئيسية"]:
         context.user_data.clear()
 
-    # الأوامر الرئيسية للمدير
     if text == "🔙 وضع المستخدم":
         context.user_data.clear()
         await update.message.reply_text("تم التبديل إلى وضع المستخدم", reply_markup=user_main_menu())
@@ -646,20 +628,60 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     elif text == "📦 إدارة المحتوى":
         await update.message.reply_text("📦 إدارة المحتوى", reply_markup=admin_content_menu())
     
-    elif text == "🔧 الأقسام المميزة":
-        await update.message.reply_text("🔧 إدارة الأقسام المميزة", reply_markup=admin_premium_sections_menu())
+    elif text == "🎯 إدارة المميزين":
+        await update.message.reply_text("🎯 إدارة المميزين", reply_markup=admin_premium_menu())
     
     elif text == "⚙️ إعدادات البوت":
         await update.message.reply_text("⚙️ إعدادات البوت", reply_markup=admin_settings_menu())
-    
-    elif text == "🎯 إدارة المميزين":
-        await show_premium_management(update, context)
     
     elif text == "📊 الإحصائيات":
         await show_statistics(update, context)
     
     elif text == "📢 البث الجماعي":
-        await show_broadcast_menu(update, context)
+        await update.message.reply_text("أرسل الرسالة للبث لجميع المستخدمين:")
+        context.user_data['broadcasting'] = True
+    
+    # إدارة المستخدمين
+    elif text == "📋 عرض المستخدمين":
+        users = db.get_all_users()
+        if users:
+            users_text = "👥 **المستخدمون:**\n\n"
+            for user_data in users:
+                status = "👑" if user_data[6] == 1 else "⭐"
+                users_text += f"{status} {user_data[0]} - {user_data[2]}\n"
+            await update.message.reply_text(users_text)
+        else:
+            await update.message.reply_text("⚠️ لا يوجد مستخدمين.")
+    
+    elif text == "⏳ طلبات الانضمام":
+        requests = db.get_pending_requests()
+        if requests:
+            req_text = "📩 **طلبات الانضمام:**\n\n"
+            for req in requests:
+                req_text += f"🆔 {req[0]} - 👤 {req[2]} - 📱 @{req[1] or 'لا يوجد'}\n"
+            await update.message.reply_text(req_text)
+        else:
+            await update.message.reply_text("✅ لا توجد طلبات انتظار.")
+    
+    elif text == "💎 ترقية مستخدم":
+        await update.message.reply_text("أرسل ID المستخدم للترقية:")
+        context.user_data['awaiting_premium_user'] = True
+    
+    elif text == "🔻 إزالة التميز":
+        premium_users = db.get_premium_users()
+        if premium_users:
+            users_text = "👑 **المستخدمون المميزون:**\n\n"
+            for user_data in premium_users:
+                users_text += f"{user_data[0]} - {user_data[2]}\n"
+            users_text += "\nأرسل ID المستخدم لإزالة التميز:"
+            await update.message.reply_text(users_text)
+            context.user_data['awaiting_remove_premium'] = True
+        else:
+            await update.message.reply_text("⚠️ لا يوجد مستخدمين مميزين.")
+    
+    elif text == "🗑 حذف مستخدم":
+        await update.message.reply_text("أرسل ID المستخدم للحذف:")
+        context.user_data['awaiting_user_delete'] = True
     
     # إدارة الأقسام
     elif text == "➕ إضافة قسم":
@@ -677,12 +699,23 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام.")
     
+    elif text == "🔧 جعل قسم مميز":
+        categories = db.get_normal_categories()
+        if categories:
+            keyboard = []
+            for cat in categories:
+                keyboard.append([KeyboardButton(f"جعل {cat[1]} مميز")])
+            keyboard.append([KeyboardButton("🔙 إدارة الأقسام")])
+            await update.message.reply_text("اختر قسم لجعله مميز:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        else:
+            await update.message.reply_text("⚠️ لا توجد أقسام عادية.")
+    
     elif text == "🗑 حذف قسم":
         categories = db.get_categories()
         if categories:
             keyboard = []
             for cat in categories:
-                keyboard.append([KeyboardButton(f"حذف قسم {cat[1]}")])
+                keyboard.append([KeyboardButton(f"حذف {cat[1]}")])
             keyboard.append([KeyboardButton("🔙 إدارة الأقسام")])
             await update.message.reply_text("اختر قسم للحذف:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         else:
@@ -723,54 +756,55 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         else:
             await update.message.reply_text("⚠️ لا يوجد محتوى.")
     
+    elif text == "🔧 جعل محتوى مميز":
+        content_items = db.get_all_content()
+        normal_content = [c for c in content_items if c[5] == 0]
+        if normal_content:
+            keyboard = []
+            for content in normal_content[:10]:  # عرض أول 10 محتويات فقط
+                keyboard.append([KeyboardButton(f"تمييز {content[1]}")])
+            keyboard.append([KeyboardButton("🔙 إدارة المحتوى")])
+            await update.message.reply_text("اختر محتوى لجعله مميز:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        else:
+            await update.message.reply_text("⚠️ لا يوجد محتوى عادي.")
+    
     elif text == "🗑 حذف محتوى":
         content_items = db.get_all_content()
         if content_items:
             keyboard = []
-            for content in content_items:
-                keyboard.append([KeyboardButton(f"حذف محتوى {content[1]}")])
+            for content in content_items[:10]:  # عرض أول 10 محتويات فقط
+                keyboard.append([KeyboardButton(f"حذف {content[1]}")])
             keyboard.append([KeyboardButton("🔙 إدارة المحتوى")])
             await update.message.reply_text("اختر محتوى للحذف:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         else:
             await update.message.reply_text("⚠️ لا يوجد محتوى.")
     
-    # الأقسام المميزة
-    elif text == "➕ إضافة قسم مميز":
-        categories = db.get_categories()
-        if categories:
-            keyboard = []
-            for cat in categories:
-                keyboard.append([KeyboardButton(f"إضافة {cat[1]}")])
-            keyboard.append([KeyboardButton("🔙 الأقسام المميزة")])
-            await update.message.reply_text("اختر قسم لإضافته للأقسام المميزة:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    # إدارة المميزين
+    elif text == "👑 عرض المميزين":
+        premium_users = db.get_premium_users()
+        if premium_users:
+            users_text = "👑 **المستخدمون المميزون:**\n\n"
+            for user_data in premium_users:
+                users_text += f"🆔 {user_data[0]} - 👤 {user_data[2]} - 📅 {user_data[7].split()[0] if user_data[7] else 'غير معروف'}\n"
+            await update.message.reply_text(users_text)
         else:
-            await update.message.reply_text("⚠️ لا توجد أقسام.")
+            await update.message.reply_text("⚠️ لا يوجد مستخدمين مميزين.")
     
-    elif text == "📋 عرض الأقسام المميزة":
-        premium_sections = db.get_premium_sections()
-        if premium_sections:
-            sections_text = "👑 **الأقسام المميزة:**\n\n"
-            for section in premium_sections:
-                sections_text += f"📁 {section[2]} (القسم: {section[3]})\n"
-            await update.message.reply_text(sections_text)
-        else:
-            await update.message.reply_text("⚠️ لا توجد أقسام مميزة.")
+    elif text == "📊 إحصائيات المميزين":
+        premium_users = db.get_premium_users()
+        total_users = len(db.get_all_users())
+        
+        stats_text = f"💎 **إحصائيات المميزين:**\n\n"
+        stats_text += f"👑 عدد المميزين: {len(premium_users)}\n"
+        stats_text += f"👥 إجمالي المستخدمين: {total_users}\n"
+        stats_text += f"📈 نسبة المميزين: {(len(premium_users)/total_users*100) if total_users > 0 else 0:.1f}%"
+        
+        await update.message.reply_text(stats_text)
     
-    elif text == "🗑 حذف قسم مميز":
-        premium_sections = db.get_premium_sections()
-        if premium_sections:
-            keyboard = []
-            for section in premium_sections:
-                keyboard.append([KeyboardButton(f"حذف {section[2]}")])
-            keyboard.append([KeyboardButton("🔙 الأقسام المميزة")])
-            await update.message.reply_text("اختر قسم مميز للحذف:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-        else:
-            await update.message.reply_text("⚠️ لا توجد أقسام مميزة.")
-    
-    elif text == "✏️ تعديل اسم القسم المميز":
-        current_name = db.get_setting('premium_section_name')
-        await update.message.reply_text(f"الاسم الحالي: {current_name}\n\nأرسل الاسم الجديد:")
-        context.user_data['editing_premium_section_name'] = True
+    elif text == "✏️ تعديل رسالة المميزين":
+        current = db.get_setting('premium_access_message')
+        await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
+        context.user_data['editing_premium_message'] = True
     
     # الإعدادات
     elif text == "✏️ رسالة الترحيب":
@@ -783,10 +817,10 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text(f"النص الحالي:\n{current}\n\nأرسل النص الجديد:")
         context.user_data['editing_about'] = True
     
-    elif text == "🎯 إعدادات المميزين":
-        current_message = db.get_setting('premium_access_message')
-        await update.message.reply_text(f"رسالة المميزين الحالية:\n{current_message}\n\nأرسل الرسالة الجديدة:")
-        context.user_data['editing_premium_message'] = True
+    elif text == "✏️ اسم قسم المميز":
+        current = db.get_setting('premium_section_name')
+        await update.message.reply_text(f"الاسم الحالي: {current}\n\nأرسل الاسم الجديد:")
+        context.user_data['editing_premium_section_name'] = True
     
     elif text == "🔐 نظام الموافقة":
         current = db.get_setting('approval_required')
@@ -796,17 +830,57 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text(f"✅ تم {status} نظام الموافقة")
     
     # معالجة إدخال البيانات
+    elif context.user_data.get('awaiting_premium_user'):
+        try:
+            target_user_id = int(text)
+            db.make_premium(target_user_id)
+            await update.message.reply_text(f"✅ تم ترقية المستخدم {target_user_id} إلى مميز", reply_markup=admin_users_menu())
+        except:
+            await update.message.reply_text("❌ ID غير صحيح", reply_markup=admin_users_menu())
+        context.user_data.clear()
+    
+    elif context.user_data.get('awaiting_remove_premium'):
+        try:
+            target_user_id = int(text)
+            db.remove_premium(target_user_id)
+            await update.message.reply_text(f"✅ تم إزالة التميز من المستخدم {target_user_id}", reply_markup=admin_users_menu())
+        except:
+            await update.message.reply_text("❌ ID غير صحيح", reply_markup=admin_users_menu())
+        context.user_data.clear()
+    
+    elif context.user_data.get('awaiting_user_delete'):
+        try:
+            target_user_id = int(text)
+            db.delete_user(target_user_id)
+            await update.message.reply_text(f"✅ تم حذف المستخدم {target_user_id}", reply_markup=admin_users_menu())
+        except:
+            await update.message.reply_text("❌ ID غير صحيح", reply_markup=admin_users_menu())
+        context.user_data.clear()
+    
     elif context.user_data.get('adding_category'):
         db.add_category(text)
         await update.message.reply_text(f"✅ تم إضافة القسم: {text}", reply_markup=admin_categories_menu())
         context.user_data.clear()
     
-    elif context.user_data.get('adding_content') and context.user_data.get('awaiting_content_description'):
-        # تم استلام وصف المحتوى، الآن نطلب العنوان
+    elif context.user_data.get('adding_content') and not context.user_data.get('awaiting_content_description'):
+        # للمحتوى النصي
+        if context.user_data.get('content_type') == 'text':
+            context.user_data['content_description'] = text
+            categories = db.get_categories()
+            keyboard = []
+            for cat in categories:
+                keyboard.append([KeyboardButton(f"القسم {cat[1]}")])
+            keyboard.append([KeyboardButton("🔙 إدارة المحتوى")])
+            
+            await update.message.reply_text(
+                "✅ تم حفظ المحتوى. الآن اختر القسم:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
+            context.user_data['awaiting_content_category'] = True
+    
+    elif context.user_data.get('awaiting_content_description'):
         context.user_data['content_description'] = text
         context.user_data['awaiting_content_description'] = False
-        context.user_data['awaiting_content_title'] = True
-        
         categories = db.get_categories()
         keyboard = []
         for cat in categories:
@@ -817,50 +891,34 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             "✅ تم حفظ الوصف. الآن اختر القسم:",
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
+        context.user_data['awaiting_content_category'] = True
     
-    elif context.user_data.get('awaiting_content_title'):
-        # تم استلام القسم، الآن نطلب إذا كان المحتوى مميزاً
+    elif context.user_data.get('awaiting_content_category'):
         if text.startswith("القسم "):
             category_name = text[6:]  # إزالة "القسم "
             category_id = get_category_id_by_name(category_name)
             if category_id:
-                context.user_data['content_category_id'] = category_id
+                # حفظ المحتوى في قاعدة البيانات
+                title = f"محتوى {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                content_type = context.user_data.get('content_type', 'text')
+                description = context.user_data.get('content_description', '')
+                file_id = context.user_data.get('content_file_id')
                 
-                keyboard = [
-                    [KeyboardButton("👑 محتوى مميز"), KeyboardButton("⭐ محتوى عادي")],
-                    [KeyboardButton("🔙 إدارة المحتوى")]
-                ]
+                db.add_content(title, description, content_type, category_id, False, file_id)
+                
                 await update.message.reply_text(
-                    "اختر نوع المحتوى:",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    f"✅ تم إضافة المحتوى إلى قسم {category_name}",
+                    reply_markup=admin_content_menu()
                 )
+                context.user_data.clear()
             else:
                 await update.message.reply_text("❌ قسم غير موجود")
         else:
             await update.message.reply_text("❌ الرجاء اختيار قسم صحيح")
     
-    elif text in ["👑 محتوى مميز", "⭐ محتوى عادي"]:
-        is_premium = text == "👑 محتوى مميز"
-        
-        # حفظ المحتوى في قاعدة البيانات
-        title = f"محتوى {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        content_type = context.user_data.get('content_type', 'text')
-        description = context.user_data.get('content_description', '')
-        category_id = context.user_data.get('content_category_id')
-        file_id = context.user_data.get('content_file_id')
-        
-        db.add_content(title, description, content_type, category_id, is_premium, file_id)
-        
-        status = "مميز 👑" if is_premium else "عادي ⭐"
-        await update.message.reply_text(
-            f"✅ تم إضافة المحتوى ({status})",
-            reply_markup=admin_content_menu()
-        )
-        context.user_data.clear()
-    
-    elif context.user_data.get('editing_premium_section_name'):
-        db.update_setting('premium_section_name', text)
-        await update.message.reply_text(f"✅ تم تحديث اسم القسم المميز إلى: {text}", reply_markup=admin_premium_sections_menu())
+    elif context.user_data.get('editing_premium_message'):
+        db.update_setting('premium_access_message', text)
+        await update.message.reply_text("✅ تم تحديث رسالة المميزين", reply_markup=admin_settings_menu())
         context.user_data.clear()
     
     elif context.user_data.get('editing_welcome'):
@@ -873,78 +931,84 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text("✅ تم تحديث حول البوت", reply_markup=admin_settings_menu())
         context.user_data.clear()
     
-    elif context.user_data.get('editing_premium_message'):
-        db.update_setting('premium_access_message', text)
-        await update.message.reply_text("✅ تم تحديث رسالة المميزين", reply_markup=admin_settings_menu())
+    elif context.user_data.get('editing_premium_section_name'):
+        db.update_setting('premium_section_name', text)
+        await update.message.reply_text(f"✅ تم تحديث اسم قسم المميز إلى: {text}", reply_markup=admin_settings_menu())
         context.user_data.clear()
     
-    # معالجة الحذف
-    elif text.startswith("حذف قسم "):
-        category_name = text[9:]  # إزالة "حذف قسم "
-        category_id = get_category_id_by_name(category_name)
-        if category_id:
-            db.delete_category(category_id)
-            await update.message.reply_text(f"✅ تم حذف القسم: {category_name}", reply_markup=admin_categories_menu())
-        else:
-            await update.message.reply_text("❌ قسم غير موجود")
+    elif context.user_data.get('broadcasting'):
+        users = db.get_all_users()
+        success = 0
+        for user_data in users:
+            try:
+                await context.bot.send_message(chat_id=user_data[0], text=f"📢 إشعار من الإدارة:\n\n{text}")
+                success += 1
+            except:
+                continue
+        await update.message.reply_text(f"✅ تم الإرسال إلى {success} مستخدم", reply_markup=admin_main_menu())
+        context.user_data.clear()
     
-    elif text.startswith("حذف محتوى "):
-        content_title = text[11:]  # إزالة "حذف محتوى "
+    # معالجة الأزرار الخاصة
+    elif text.startswith("جعل "):
+        if text.endswith(" مميز"):
+            category_name = text[4:-5]  # إزالة "جعل " و " مميز"
+            category_id = get_category_id_by_name(category_name)
+            if category_id:
+                db.update_category(category_id, category_name, 1)
+                await update.message.reply_text(f"✅ تم جعل القسم {category_name} مميز", reply_markup=admin_categories_menu())
+            else:
+                await update.message.reply_text("❌ قسم غير موجود")
+    
+    elif text.startswith("تمييز "):
+        content_title = text[7:]  # إزالة "تمييز "
         all_content = db.get_all_content()
         for content in all_content:
             if content[1] == content_title:
-                db.delete_content(content[0])
-                await update.message.reply_text(f"✅ تم حذف المحتوى: {content_title}", reply_markup=admin_content_menu())
+                db.conn.execute('UPDATE content SET is_premium = 1 WHERE id = ?', (content[0],))
+                db.conn.commit()
+                await update.message.reply_text(f"✅ تم جعل المحتوى {content_title} مميز", reply_markup=admin_content_menu())
                 return
         await update.message.reply_text("❌ محتوى غير موجود")
     
     elif text.startswith("حذف "):
-        section_name = text[5:]  # إزالة "حذف "
-        premium_sections = db.get_premium_sections()
-        for section in premium_sections:
-            if section[2] == section_name:
-                db.delete_premium_section(section[0])
-                await update.message.reply_text(f"✅ تم حذف القسم المميز: {section_name}", reply_markup=admin_premium_sections_menu())
-                return
-        await update.message.reply_text("❌ قسم مميز غير موجود")
-    
-    elif text.startswith("إضافة "):
-        category_name = text[6:]  # إزالة "إضافة "
-        category_id = get_category_id_by_name(category_name)
-        if category_id:
-            db.add_premium_section(category_id, category_name)
-            await update.message.reply_text(f"✅ تم إضافة القسم {category_name} إلى الأقسام المميزة", reply_markup=admin_premium_sections_menu())
+        if text.startswith("حذف قسم "):
+            category_name = text[9:]  # إزالة "حذف قسم "
+            category_id = get_category_id_by_name(category_name)
+            if category_id:
+                db.delete_category(category_id)
+                await update.message.reply_text(f"✅ تم حذف القسم: {category_name}", reply_markup=admin_categories_menu())
+            else:
+                await update.message.reply_text("❌ قسم غير موجود")
+        elif text.startswith("حذف محتوى "):
+            content_title = text[11:]  # إزالة "حذف محتوى "
+            all_content = db.get_all_content()
+            for content in all_content:
+                if content[1] == content_title:
+                    db.delete_content(content[0])
+                    await update.message.reply_text(f"✅ تم حذف المحتوى: {content_title}", reply_markup=admin_content_menu())
+                    return
+            await update.message.reply_text("❌ محتوى غير موجود")
         else:
-            await update.message.reply_text("❌ قسم غير موجود")
+            # حذف قسم عادي
+            category_name = text[5:]  # إزالة "حذف "
+            category_id = get_category_id_by_name(category_name)
+            if category_id:
+                db.delete_category(category_id)
+                await update.message.reply_text(f"✅ تم حذف القسم: {category_name}", reply_markup=admin_categories_menu())
+            else:
+                await update.message.reply_text("❌ قسم غير موجود")
     
     else:
         await update.message.reply_text("👑 لوحة تحكم المدير", reply_markup=admin_main_menu())
 
-# دوال مساعدة للمدير
-async def show_premium_management(update: Update, context: CallbackContext):
-    premium_users = [u for u in db.get_all_users() if u[6] == 1]
-    total_users = len(db.get_all_users())
-    
-    keyboard = [
-        [KeyboardButton("💎 ترقية مستخدم"), KeyboardButton("🔻 إزالة التميز")],
-        [KeyboardButton("👑 عرض المميزين"), KeyboardButton("📊 إحصائيات المميزين")],
-        [KeyboardButton("🔙 لوحة التحكم")]
-    ]
-    
-    stats_text = f"💎 **إدارة المميزين**\n\n"
-    stats_text += f"👑 الأعضاء المميزين: {len(premium_users)}\n"
-    stats_text += f"👥 إجمالي المستخدمين: {total_users}\n"
-    stats_text += f"📈 النسبة: {(len(premium_users)/total_users*100) if total_users > 0 else 0:.1f}%"
-    
-    await update.message.reply_text(stats_text, reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-
+# دوال مساعدة
 async def show_statistics(update: Update, context: CallbackContext):
     total_users = len(db.get_all_users())
     active_users = len(db.get_active_users(30))
-    premium_users = len([u for u in db.get_all_users() if u[6] == 1])
+    premium_users = len(db.get_premium_users())
     total_content = len(db.get_all_content())
     total_categories = len(db.get_categories())
-    premium_sections = len(db.get_premium_sections())
+    premium_categories = len(db.get_premium_categories())
     
     stats_text = f"📊 **إحصائيات البوت:**\n\n"
     stats_text += f"👥 المستخدمون: {total_users}\n"
@@ -952,16 +1016,9 @@ async def show_statistics(update: Update, context: CallbackContext):
     stats_text += f"💎 المميزون: {premium_users}\n"
     stats_text += f"📦 المحتوى: {total_content}\n"
     stats_text += f"📁 الأقسام: {total_categories}\n"
-    stats_text += f"👑 الأقسام المميزة: {premium_sections}"
+    stats_text += f"👑 الأقسام المميزة: {premium_categories}"
     
     await update.message.reply_text(stats_text)
-
-async def show_broadcast_menu(update: Update, context: CallbackContext):
-    keyboard = [
-        [KeyboardButton("📢 للجميع"), KeyboardButton("👥 للنشطين")],
-        [KeyboardButton("💎 للمميزين فقط"), KeyboardButton("🔙 لوحة التحكم")]
-    ]
-    await update.message.reply_text("📢 اختر نوع البث:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 async def error_handler(update: Update, context: CallbackContext) -> None:
     logger.error(f"حدث خطأ: {context.error}")
