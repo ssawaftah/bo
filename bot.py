@@ -495,13 +495,20 @@ async def create_and_send_backup(update: Update, context: CallbackContext):
 
 async def restore_backup_from_file(update: Update, context: CallbackContext, file):
     try:
-        file_content = await file.download_as_bytearray()
+        # الحصول على الملف من التليجرام
+        file_obj = await context.bot.get_file(file.file_id)
         
+        # تحميل محتوى الملف
+        file_content = await file_obj.download_as_bytearray()
+        
+        # فك ضغط ZIP
         zip_buffer = io.BytesIO(file_content)
         with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
+            # استخراج البيانات
             json_data = zip_file.read('backup_data.json').decode('utf-8')
             backup_data = json.loads(json_data)
         
+        # استعادة البيانات
         success = db.restore_backup(backup_data)
         
         if success:
@@ -514,11 +521,16 @@ async def restore_backup_from_file(update: Update, context: CallbackContext, fil
                 reply_markup=admin_main_menu()
             )
             
+            # إضافة سجل
             filename = file.file_name
             db.add_backup_record(filename, len(file_content), "استعادة نسخة احتياطية")
         else:
             await update.message.reply_text("❌ فشل في استعادة النسخة الاحتياطية")
             
+    except zipfile.BadZipFile:
+        await update.message.reply_text("❌ الملف ليس نسخة احتياطية صالحة")
+    except KeyError:
+        await update.message.reply_text("❌ الملف لا يحتوي على بيانات نسخ احتياطي صالحة")
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ في استعادة النسخة الاحتياطية: {str(e)}")
 
