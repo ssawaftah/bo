@@ -1100,7 +1100,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data.clear()
         return
     
-    # معالجة الأزرار الخاصة - تم إصلاح جميع مشاكل الحذف
+    # معالجة الأزرار الخاصة - تم إصلاح مشكلة الحذف بشكل نهائي
     elif text.startswith("جعل "):
         if text.endswith(" مميز"):
             category_name = text[4:-5]
@@ -1117,7 +1117,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         all_content = db.get_all_content()
         content_found = False
         for content in all_content:
-            if content[1].startswith(content_title):
+            # البحث باستخدام المطابقة الكاملة أو الجزئية
+            if content[1] == content_title or content[1].startswith(content_title):
                 db.conn.execute('UPDATE content SET is_premium = 1 WHERE id = ?', (content[0],))
                 db.conn.commit()
                 await update.message.reply_text(f"✅ تم جعل المحتوى {content[1]} مميز", reply_markup=admin_content_menu())
@@ -1129,26 +1130,28 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         return
     
     elif text.startswith("حذف "):
-        # حذف قسم
-        category_name = text[5:]
-        category_id = get_category_id_by_name(category_name)
+        item_name = text[5:]
+        
+        # البحث أولاً في الأقسام
+        category_id = get_category_id_by_name(item_name)
         if category_id:
             db.delete_category(category_id)
-            await update.message.reply_text(f"✅ تم حذف القسم: {category_name}", reply_markup=admin_categories_menu())
+            await update.message.reply_text(f"✅ تم حذف القسم: {item_name}", reply_markup=admin_categories_menu())
             return
         
-        # حذف محتوى
+        # إذا لم يكن قسم، ابحث في المحتوى
         all_content = db.get_all_content()
         content_found = False
         for content in all_content:
-            if content[1].startswith(category_name):
+            # استخدام مطابقة كاملة أو جزئية للعنوان
+            if content[1] == item_name or content[1].startswith(item_name):
                 db.delete_content(content[0])
                 await update.message.reply_text(f"✅ تم حذف المحتوى: {content[1]}", reply_markup=admin_content_menu())
                 content_found = True
                 break
         
         if not content_found:
-            await update.message.reply_text("❌ غير موجود")
+            await update.message.reply_text(f"❌ لم يتم العثور على '{item_name}'")
         return
     
     else:
