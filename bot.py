@@ -633,6 +633,47 @@ async def start(update: Update, context: CallbackContext) -> None:
     context.user_data.clear()
     db.update_user_activity(user_id)
     
+    # التحقق أولاً إذا كان المستخدم موجوداً ومقبولاً
+    existing_user = db.get_user(user_id)
+    
+    if existing_user:
+        # المستخدم موجود في النظام
+        if is_admin(user_id):
+            await update.message.reply_text(
+                "👑 مرحباً بك آلة المدير!\n\nلوحة التحكم المتقدمة جاهزة.",
+                reply_markup=admin_main_menu()
+            )
+            return
+        
+        if existing_user[4] == 1:  # المستخدم مقبول
+            subscription_required = db.get_setting('subscription_required') == '1'
+            
+            # التحقق من الاشتراك إذا كان مطلوباً
+            if subscription_required and existing_user[9] == 0:
+                subscription_message = db.get_setting('subscription_message')
+                subscription_channel = db.get_setting('subscription_channel')
+                
+                await update.message.reply_text(
+                    f"{subscription_message}\n\nالقناة: {subscription_channel}",
+                    reply_markup=user_subscription_menu()
+                )
+                return
+            
+            welcome_message = db.get_setting('welcome_message')
+            await update.message.reply_text(
+                f"{welcome_message}\n\nمرحباً بك مرة أخرى {user.first_name}! 👋",
+                reply_markup=user_main_menu()
+            )
+            return
+        else:
+            # المستخدم موجود لكن غير مقبول
+            await update.message.reply_text(
+                "⏳ لا يزال طلبك قيد المراجعة...",
+                reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔄 تحديث الحالة")]], resize_keyboard=True)
+            )
+            return
+    
+    # المستخدم جديد - إضافته للنظام
     if is_admin(user_id):
         await update.message.reply_text(
             "👑 مرحباً بك آلة المدير!\n\nلوحة التحكم المتقدمة جاهزة.",
@@ -645,13 +686,14 @@ async def start(update: Update, context: CallbackContext) -> None:
     user_data = db.get_user(user_id)
     auto_approve = db.get_setting('auto_approve') == '1'
     approval_required = db.get_setting('approval_required') == '1'
-    subscription_required = db.get_setting('subscription_required') == '1'
     
     if auto_approve and not user_data[4]:
         db.approve_user(user_id)
         user_data = db.get_user(user_id)
     
     if user_data and user_data[4] == 1:
+        subscription_required = db.get_setting('subscription_required') == '1'
+        
         # التحقق من الاشتراك إذا كان مطلوباً
         if subscription_required and user_data[9] == 0:
             subscription_message = db.get_setting('subscription_message')
@@ -671,7 +713,7 @@ async def start(update: Update, context: CallbackContext) -> None:
     elif not approval_required:
         db.approve_user(user_id)
         
-        # التحقق من الاشتراك إذا كان مطلوباً
+        subscription_required = db.get_setting('subscription_required') == '1'
         if subscription_required:
             subscription_message = db.get_setting('subscription_message')
             subscription_channel = db.get_setting('subscription_channel')
@@ -728,11 +770,26 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
         db.approve_user(target_user_id)
         
         try:
-            await context.bot.send_message(
-                chat_id=target_user_id,
-                text="🎉 تمت الموافقة على طلبك!",
-                reply_markup=user_main_menu()
-            )
+            # إرسال رسالة للمستخدم بأنه تمت الموافقته
+            user_data = db.get_user(target_user_id)
+            if user_data:
+                subscription_required = db.get_setting('subscription_required') == '1'
+                
+                if subscription_required:
+                    subscription_message = db.get_setting('subscription_message')
+                    subscription_channel = db.get_setting('subscription_channel')
+                    
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=f"🎉 تمت الموافقة على طلبك!\n\n{subscription_message}\n\nالقناة: {subscription_channel}",
+                        reply_markup=user_subscription_menu()
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text="🎉 تمت الموافقة على طلبك!\n\nيمكنك الآن استخدام البوت.",
+                        reply_markup=user_main_menu()
+                    )
         except Exception as e:
             logger.error(f"خطأ في إرسال رسالة للمستخدم: {e}")
         
@@ -745,6 +802,15 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
             
         target_user_id = int(data.split('_')[1])
         db.reject_user(target_user_id)
+        
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="❌ تم رفض طلب انضمامك."
+            )
+        except Exception as e:
+            logger.error(f"خطأ في إرسال رسالة للمستخدم: {e}")
+            
         await query.edit_message_text(f"❌ تم رفض طلب المستخدم {target_user_id}")
     
     elif data.startswith('content_'):
@@ -791,17 +857,33 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
         if is_subscribed:
             db.mark_user_subscribed(user_id)
             success_message = db.get_setting('subscription_success_message')
-            await query.edit_message_text(
+            
+            # إرسال رسالة جديدة بدلاً من تعديل الرسالة القديمة
+            await query.message.reply_text(
                 f"{success_message}\n\nمرحباً بك في البوت! 👋",
                 reply_markup=user_main_menu()
             )
+            
+            # حذف الرسالة القديمة
+            try:
+                await query.message.delete()
+            except:
+                pass
         else:
             subscription_message = db.get_setting('subscription_message')
             subscription_channel = db.get_setting('subscription_channel')
-            await query.edit_message_text(
+            
+            # إرسال رسالة جديدة بدلاً من تعديل الرسالة القديمة
+            await query.message.reply_text(
                 f"❌ لم يتم التحقق من اشتراكك بعد!\n\n{subscription_message}\n\nالقناة: {subscription_channel}",
                 reply_markup=user_subscription_menu()
             )
+            
+            # حذف الرسالة القديمة
+            try:
+                await query.message.delete()
+            except:
+                pass
     
     elif data.startswith('delete_cat_'):
         if not is_admin(user_id):
@@ -913,18 +995,22 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
     db.update_user_activity(user_id)
     user_data = db.get_user(user_id)
     
-    if not user_data or user_data[4] == 0:
+    if not user_data:
+        # إذا لم يكن المستخدم موجوداً في النظام
+        await start(update, context)
+        return
+    
+    if user_data[4] == 0:  # المستخدم غير مقبول
         if text == "🔄 تحديث الحالة":
             user_data = db.get_user(user_id)
             if user_data and user_data[4] == 1:
-                # التحقق من الاشتراك إذا كان مطلوباً
                 subscription_required = db.get_setting('subscription_required') == '1'
                 if subscription_required and user_data[9] == 0:
                     subscription_message = db.get_setting('subscription_message')
                     subscription_channel = db.get_setting('subscription_channel')
                     
                     await update.message.reply_text(
-                        f"{subscription_message}\n\nالقناة: {subscription_channel}",
+                        f"🎉 تمت الموافقة على طلبك!\n\n{subscription_message}\n\nالقناة: {subscription_channel}",
                         reply_markup=user_subscription_menu()
                     )
                     return
@@ -990,6 +1076,8 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         
         await update.message.reply_text("❌ لم أفهم طلبك.", reply_markup=user_main_menu())
 
+# ... باقي دوال handle_admin_message و error_handler تبقى كما هي بدون تغيير ...
+# [يتبع باقي الكود بدون تغيير]
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
