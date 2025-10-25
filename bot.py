@@ -35,7 +35,8 @@ class Database:
                 is_admin INTEGER DEFAULT 0,
                 is_premium INTEGER DEFAULT 0,
                 joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                has_subscribed INTEGER DEFAULT 0
             )
         ''')
 
@@ -95,9 +96,9 @@ class Database:
     def create_admin(self):
         admin_id = int(os.getenv('ADMIN_ID', 123456789))
         self.conn.execute('''
-            INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, is_approved, is_admin, is_premium)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (admin_id, 'admin', 'Admin', 'Bot', 1, 1, 1))
+            INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, is_approved, is_admin, is_premium, has_subscribed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (admin_id, 'admin', 'Admin', 'Bot', 1, 1, 1, 1))
         self.conn.commit()
 
     def create_default_settings(self):
@@ -109,7 +110,11 @@ class Database:
             ('start_button_text', '🚀 ابدأ الرحلة'),
             ('auto_approve', '0'),
             ('admin_contact', '@username'),
-            ('backup_password', 'Mkfrky')
+            ('backup_password', 'Mkfrky'),
+            ('subscription_required', '0'),
+            ('subscription_channel', '@username'),
+            ('subscription_message', '📢 يجب الاشتراك في القناة أولاً لاستخدام البوت\n\nاشترك ثم اضغط على زر التحقق'),
+            ('subscription_success_message', '✅ شكراً لك! تم التحقق من اشتراكك بنجاح\n\nيمكنك الآن استخدام البوت')
         ]
         for key, value in default_settings:
             self.conn.execute('INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)', (key, value))
@@ -172,6 +177,10 @@ class Database:
         self.conn.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
         self.conn.commit()
 
+    def mark_user_subscribed(self, user_id):
+        self.conn.execute('UPDATE users SET has_subscribed = 1 WHERE user_id = ?', (user_id,))
+        self.conn.commit()
+
     def add_category(self, name):
         self.conn.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (name,))
         self.conn.commit()
@@ -214,6 +223,15 @@ class Database:
             FROM content c JOIN categories cat ON c.category_id = cat.id 
             ORDER BY c.created_date DESC
         ''')
+        return cursor.fetchall()
+
+    def get_recent_content(self, limit=7):
+        cursor = self.conn.execute('''
+            SELECT c.*, cat.name as category_name 
+            FROM content c JOIN categories cat ON c.category_id = cat.id 
+            ORDER BY c.created_date DESC 
+            LIMIT ?
+        ''', (limit,))
         return cursor.fetchall()
 
     def delete_content(self, content_id):
@@ -362,12 +380,36 @@ def get_category_name_by_id(category_id):
     category = db.get_category_by_id(category_id)
     return category[1] if category else "غير معروف"
 
+async def check_subscription(user_id, context: CallbackContext):
+    """التحقق من اشتراك المستخدم في القناة"""
+    subscription_channel = db.get_setting('subscription_channel')
+    if not subscription_channel or subscription_channel == '@username':
+        return True
+    
+    try:
+        # إزالة @ من اسم القناة إذا وجد
+        channel = subscription_channel.replace('@', '')
+        chat_member = await context.bot.get_chat_member(f'@{channel}', user_id)
+        return chat_member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.error(f"خطأ في التحقق من الاشتراك: {e}")
+        return False
+
 def user_main_menu():
     keyboard = [
-        [KeyboardButton("📁 الاقسام"), KeyboardButton("👤 الملف الشخصي")],
+        [KeyboardButton("📁 الاقسام"), KeyboardButton("📚 آخر القصص")],
         [KeyboardButton("ℹ️ حول البوت"), KeyboardButton("📞 اتصل بنا")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def user_subscription_menu():
+    subscription_channel = db.get_setting('subscription_channel')
+    keyboard = [
+        [InlineKeyboardButton("📢 انضم إلى القناة", url=f"https://t.me/{subscription_channel.replace('@', '')}")],
+        [InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription")],
+        [InlineKeyboardButton("🔄 تحديث", callback_data="refresh_subscription")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 def user_categories_menu():
     categories = db.get_categories()
@@ -390,6 +432,18 @@ def user_content_menu(category_name, category_id):
         keyboard.append([InlineKeyboardButton(f"📄 {short_title}", callback_data=f"content_{content[0]}")])
     
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_to_categories")])
+    
+    return InlineKeyboardMarkup(keyboard)
+
+def user_recent_content_menu():
+    recent_content = db.get_recent_content(7)
+    keyboard = []
+    
+    for content in recent_content:
+        short_title = content[1][:20] + "..." if len(content[1]) > 20 else content[1]
+        keyboard.append([InlineKeyboardButton(f"📄 {short_title}", callback_data=f"content_{content[0]}")])
+    
+    keyboard.append([InlineKeyboardButton("🏠 الرئيسية", callback_data="back_to_main")])
     
     return InlineKeyboardMarkup(keyboard)
 
@@ -428,7 +482,17 @@ def admin_settings_menu():
     keyboard = [
         [KeyboardButton("✏️ رسالة الترحيب"), KeyboardButton("📝 حول البوت")],
         [KeyboardButton("📞 اتصل بنا"), KeyboardButton("🔄 زر البدء")],
-        [KeyboardButton("🔐 نظام الموافقة"), KeyboardButton("🔙 لوحة التحكم")]
+        [KeyboardButton("🔐 نظام الموافقة"), KeyboardButton("📢 إعدادات الاشتراك")],
+        [KeyboardButton("🔙 لوحة التحكم")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def admin_subscription_menu():
+    subscription_status = "✅ مفعل" if db.get_setting('subscription_required') == '1' else "❌ معطل"
+    keyboard = [
+        [KeyboardButton(f"🔧 حالة الاشتراك: {subscription_status}")],
+        [KeyboardButton("✏️ رسالة الاشتراك"), KeyboardButton("🔗 رابط القناة")],
+        [KeyboardButton("✏️ رسالة النجاح"), KeyboardButton("🔙 الإعدادات")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -495,20 +559,14 @@ async def create_and_send_backup(update: Update, context: CallbackContext):
 
 async def restore_backup_from_file(update: Update, context: CallbackContext, file):
     try:
-        # الحصول على الملف من التليجرام
         file_obj = await context.bot.get_file(file.file_id)
-        
-        # تحميل محتوى الملف
         file_content = await file_obj.download_as_bytearray()
         
-        # فك ضغط ZIP
         zip_buffer = io.BytesIO(file_content)
         with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
-            # استخراج البيانات
             json_data = zip_file.read('backup_data.json').decode('utf-8')
             backup_data = json.loads(json_data)
         
-        # استعادة البيانات
         success = db.restore_backup(backup_data)
         
         if success:
@@ -521,7 +579,6 @@ async def restore_backup_from_file(update: Update, context: CallbackContext, fil
                 reply_markup=admin_main_menu()
             )
             
-            # إضافة سجل
             filename = file.file_name
             db.add_backup_record(filename, len(file_content), "استعادة نسخة احتياطية")
         else:
@@ -588,12 +645,24 @@ async def start(update: Update, context: CallbackContext) -> None:
     user_data = db.get_user(user_id)
     auto_approve = db.get_setting('auto_approve') == '1'
     approval_required = db.get_setting('approval_required') == '1'
+    subscription_required = db.get_setting('subscription_required') == '1'
     
     if auto_approve and not user_data[4]:
         db.approve_user(user_id)
         user_data = db.get_user(user_id)
     
     if user_data and user_data[4] == 1:
+        # التحقق من الاشتراك إذا كان مطلوباً
+        if subscription_required and user_data[9] == 0:
+            subscription_message = db.get_setting('subscription_message')
+            subscription_channel = db.get_setting('subscription_channel')
+            
+            await update.message.reply_text(
+                f"{subscription_message}\n\nالقناة: {subscription_channel}",
+                reply_markup=user_subscription_menu()
+            )
+            return
+        
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
             f"{welcome_message}\n\nمرحباً بك {user.first_name}! 👋",
@@ -601,6 +670,18 @@ async def start(update: Update, context: CallbackContext) -> None:
         )
     elif not approval_required:
         db.approve_user(user_id)
+        
+        # التحقق من الاشتراك إذا كان مطلوباً
+        if subscription_required:
+            subscription_message = db.get_setting('subscription_message')
+            subscription_channel = db.get_setting('subscription_channel')
+            
+            await update.message.reply_text(
+                f"{subscription_message}\n\nالقناة: {subscription_channel}",
+                reply_markup=user_subscription_menu()
+            )
+            return
+        
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
             f"{welcome_message}\n\nمرحباً بك {user.first_name}! 👋",
@@ -694,6 +775,33 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
             await query.message.edit_text("📁 الاقسام المتاحة:\n\nاختر قسم:", reply_markup=user_categories_menu())
         else:
             await query.message.edit_text("⚠️ لا توجد أقسام متاحة حالياً.")
+    
+    elif data == 'back_to_main':
+        await query.message.edit_text("🏠 الرئيسية", reply_markup=user_main_menu())
+    
+    elif data == 'check_subscription' or data == 'refresh_subscription':
+        subscription_required = db.get_setting('subscription_required') == '1'
+        
+        if not subscription_required:
+            await query.edit_message_text("✅ نظام الاشتراك غير مفعل حالياً")
+            return
+        
+        is_subscribed = await check_subscription(user_id, context)
+        
+        if is_subscribed:
+            db.mark_user_subscribed(user_id)
+            success_message = db.get_setting('subscription_success_message')
+            await query.edit_message_text(
+                f"{success_message}\n\nمرحباً بك في البوت! 👋",
+                reply_markup=user_main_menu()
+            )
+        else:
+            subscription_message = db.get_setting('subscription_message')
+            subscription_channel = db.get_setting('subscription_channel')
+            await query.edit_message_text(
+                f"❌ لم يتم التحقق من اشتراكك بعد!\n\n{subscription_message}\n\nالقناة: {subscription_channel}",
+                reply_markup=user_subscription_menu()
+            )
     
     elif data.startswith('delete_cat_'):
         if not is_admin(user_id):
@@ -809,10 +917,35 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         if text == "🔄 تحديث الحالة":
             user_data = db.get_user(user_id)
             if user_data and user_data[4] == 1:
+                # التحقق من الاشتراك إذا كان مطلوباً
+                subscription_required = db.get_setting('subscription_required') == '1'
+                if subscription_required and user_data[9] == 0:
+                    subscription_message = db.get_setting('subscription_message')
+                    subscription_channel = db.get_setting('subscription_channel')
+                    
+                    await update.message.reply_text(
+                        f"{subscription_message}\n\nالقناة: {subscription_channel}",
+                        reply_markup=user_subscription_menu()
+                    )
+                    return
+                
                 await update.message.reply_text("🎉 تمت الموافقة على طلبك!", reply_markup=user_main_menu())
             else:
                 await update.message.reply_text("⏳ لا يزال طلبك قيد المراجعة...")
         return
+    
+    # التحقق من الاشتراك إذا كان مطلوباً
+    subscription_required = db.get_setting('subscription_required') == '1'
+    if subscription_required and user_data[9] == 0:
+        if text != "🔄 تحديث الحالة":
+            subscription_message = db.get_setting('subscription_message')
+            subscription_channel = db.get_setting('subscription_channel')
+            
+            await update.message.reply_text(
+                f"{subscription_message}\n\nالقناة: {subscription_channel}",
+                reply_markup=user_subscription_menu()
+            )
+            return
     
     if text == "🏠 الرئيسية":
         await update.message.reply_text("🏠 الرئيسية", reply_markup=user_main_menu())
@@ -824,14 +957,15 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام متاحة حالياً.")
     
-    elif text == "👤 الملف الشخصي":
-        user_stats = f"👤 الملف الشخصي\n\n"
-        user_stats += f"🆔 الرقم: {user_id}\n"
-        user_stats += f"👤 الاسم: {user.first_name}\n"
-        user_stats += f"📅 تاريخ الانضمام: {user_data[7].split()[0] if user_data[7] else 'غير معروف'}\n"
-        user_stats += f"📱 آخر نشاط: الآن\n"
-        
-        await update.message.reply_text(user_stats)
+    elif text == "📚 آخر القصص":
+        recent_content = db.get_recent_content(7)
+        if recent_content:
+            await update.message.reply_text(
+                "📚 آخر القصص المضافة:\n\nاختر قصة للقراءة:",
+                reply_markup=user_recent_content_menu()
+            )
+        else:
+            await update.message.reply_text("⚠️ لا توجد قصص متاحة حالياً.")
     
     elif text == "ℹ️ حول البوت":
         about_text = db.get_setting('about_text')
@@ -866,7 +1000,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
 
     db.update_user_activity(user_id)
 
-    if text in ["🔙 لوحة التحكم", "🔙 إدارة الأقسام", "🔙 إدارة المحتوى", "🔙 إدارة المستخدمين", "🔙 النسخ الاحتياطي"]:
+    if text in ["🔙 لوحة التحكم", "🔙 إدارة الأقسام", "🔙 إدارة المحتوى", "🔙 إدارة المستخدمين", "🔙 النسخ الاحتياطي", "🔙 الإعدادات"]:
         context.user_data.clear()
 
     if text == "🔙 وضع المستخدم":
@@ -888,6 +1022,36 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     
     elif text == "⚙️ إعدادات البوت":
         await update.message.reply_text("⚙️ إعدادات البوت", reply_markup=admin_settings_menu())
+        return
+    
+    elif text == "📢 إعدادات الاشتراك":
+        await update.message.reply_text("📢 إعدادات الاشتراك الإجباري", reply_markup=admin_subscription_menu())
+        return
+    
+    elif text.startswith("🔧 حالة الاشتراك:"):
+        current = db.get_setting('subscription_required')
+        new_status = '0' if current == '1' else '1'
+        db.update_setting('subscription_required', new_status)
+        status = "معطل" if new_status == '0' else "مفعل"
+        await update.message.reply_text(f"✅ تم {status} نظام الاشتراك الإجباري", reply_markup=admin_subscription_menu())
+        return
+    
+    elif text == "✏️ رسالة الاشتراك":
+        current = db.get_setting('subscription_message')
+        await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
+        context.user_data['editing_subscription_message'] = True
+        return
+    
+    elif text == "🔗 رابط القناة":
+        current = db.get_setting('subscription_channel')
+        await update.message.reply_text(f"رابط القناة الحالي: {current}\n\nأرسل رابط القناة الجديد (مثال: @channel_name):")
+        context.user_data['editing_subscription_channel'] = True
+        return
+    
+    elif text == "✏️ رسالة النجاح":
+        current = db.get_setting('subscription_success_message')
+        await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
+        context.user_data['editing_subscription_success'] = True
         return
     
     elif text == "💾 النسخ الاحتياطي":
@@ -937,7 +1101,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         if users:
             users_text = "👥 المستخدمون:\n\n"
             for user_data in users:
-                users_text += f"🆔 {user_data[0]} - 👤 {user_data[2]}\n"
+                subscription_status = "✅" if user_data[9] == 1 else "❌"
+                users_text += f"{subscription_status} {user_data[0]} - 👤 {user_data[2]}\n"
             await update.message.reply_text(users_text)
         else:
             await update.message.reply_text("⚠️ لا يوجد مستخدمين.")
@@ -1077,8 +1242,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         current = db.get_setting('approval_required')
         new_status = '0' if current == '1' else '1'
         db.update_setting('approval_required', new_status)
-        status = "معطل" if new_status == '0' else "مفعل"
-        await update.message.reply_text(f"✅ تم {status} نظام الموافقة")
+        status = "❌ معطل" if new_status == '0' else "✅ مفعل"
+        await update.message.reply_text(f"{status} نظام الموافقة")
         return
     
     elif context.user_data.get('content_stage') == 'type':
@@ -1174,6 +1339,24 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data.clear()
         return
     
+    elif context.user_data.get('editing_subscription_message'):
+        db.update_setting('subscription_message', text)
+        await update.message.reply_text("✅ تم تحديث رسالة الاشتراك", reply_markup=admin_subscription_menu())
+        context.user_data.clear()
+        return
+    
+    elif context.user_data.get('editing_subscription_channel'):
+        db.update_setting('subscription_channel', text)
+        await update.message.reply_text(f"✅ تم تحديث رابط القناة إلى: {text}", reply_markup=admin_subscription_menu())
+        context.user_data.clear()
+        return
+    
+    elif context.user_data.get('editing_subscription_success'):
+        db.update_setting('subscription_success_message', text)
+        await update.message.reply_text("✅ تم تحديث رسالة النجاح", reply_markup=admin_subscription_menu())
+        context.user_data.clear()
+        return
+    
     elif context.user_data.get('editing_backup_password'):
         db.update_setting('backup_password', text)
         await update.message.reply_text(f"✅ تم تحديث كلمة سر النسخ الاحتياطي إلى: {text}", reply_markup=admin_backup_menu())
@@ -1211,7 +1394,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             try:
                 await context.bot.send_message(
                     chat_id=user_data[0], 
-                    text=f"📢 إشعار من الإدارة:\n\n{text}"
+                    text=f"*إشعار عام من الإدارة:*\n\n{text}"
                 )
                 success += 1
             except:
@@ -1239,7 +1422,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
     
-    logger.info("🚀 بدء تشغيل البوت الكامل مع نظام النسخ الاحتياطي...")
+    logger.info("🚀 بدء تشغيل البوت الكامل مع نظام الاشتراك الإجباري...")
     application.run_polling()
 
 if __name__ == '__main__':
