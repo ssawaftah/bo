@@ -707,7 +707,7 @@ async def start(update: Update, context: CallbackContext) -> None:
         
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
-            f"{welcome_message}\n\nمرحباً بك {user.first_name}! 👋",
+            f"اهلا وسهلا {user.first_name} 👋\n\n{welcome_message}",
             reply_markup=user_main_menu()
         )
     elif not approval_required:
@@ -726,7 +726,7 @@ async def start(update: Update, context: CallbackContext) -> None:
         
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
-            f"{welcome_message}\n\nمرحباً بك {user.first_name}! 👋",
+        f"اهلا وسهلا {user.first_name} 👋\n\n{welcome_message}",
             reply_markup=user_main_menu()
         )
     else:
