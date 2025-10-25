@@ -2,6 +2,9 @@ import os
 import logging
 import sqlite3
 import json
+import zipfile
+import io
+import tempfile
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
@@ -76,6 +79,17 @@ class Database:
                 value TEXT
             )
         ''')
+        
+        # جدول النسخ الاحتياطية
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                backup_name TEXT,
+                backup_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                file_size INTEGER,
+                description TEXT
+            )
+        ''')
         self.conn.commit()
 
     def create_admin(self):
@@ -94,7 +108,8 @@ class Database:
             ('contact_text', '📞 للتواصل: @username'),
             ('start_button_text', '🚀 ابدأ الرحلة'),
             ('auto_approve', '0'),
-            ('admin_contact', '@username')
+            ('admin_contact', '@username'),
+            ('backup_password', 'Mkfrky')
         ]
         for key, value in default_settings:
             self.conn.execute('INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)', (key, value))
@@ -171,7 +186,6 @@ class Database:
         self.conn.commit()
 
     def delete_category(self, category_id):
-        # التحقق أولاً من وجود القسم
         cursor = self.conn.execute('SELECT * FROM categories WHERE id = ?', (category_id,))
         category = cursor.fetchone()
         if not category:
@@ -203,7 +217,6 @@ class Database:
         return cursor.fetchall()
 
     def delete_content(self, content_id):
-        # التحقق أولاً من وجود المحتوى
         cursor = self.conn.execute('SELECT * FROM content WHERE id = ?', (content_id,))
         content = cursor.fetchone()
         if not content:
@@ -225,6 +238,111 @@ class Database:
         cursor = self.conn.execute('SELECT * FROM content WHERE title LIKE ?', (f'%{title}%',))
         return cursor.fetchall()
 
+    def create_backup(self):
+        backup_data = {
+            'timestamp': datetime.now().isoformat(),
+            'version': '2.0',
+            'users': self.get_all_users_data(),
+            'categories': self.get_all_categories_data(),
+            'content': self.get_all_content_data(),
+            'settings': self.get_all_settings_data(),
+            'join_requests': self.get_all_join_requests_data()
+        }
+        return backup_data
+
+    def get_all_users_data(self):
+        cursor = self.conn.execute('SELECT * FROM users')
+        columns = [description[0] for description in cursor.description]
+        users = cursor.fetchall()
+        return {'columns': columns, 'data': users}
+
+    def get_all_categories_data(self):
+        cursor = self.conn.execute('SELECT * FROM categories')
+        columns = [description[0] for description in cursor.description]
+        categories = cursor.fetchall()
+        return {'columns': columns, 'data': categories}
+
+    def get_all_content_data(self):
+        cursor = self.conn.execute('SELECT * FROM content')
+        columns = [description[0] for description in cursor.description]
+        content = cursor.fetchall()
+        return {'columns': columns, 'data': content}
+
+    def get_all_settings_data(self):
+        cursor = self.conn.execute('SELECT * FROM bot_settings')
+        columns = [description[0] for description in cursor.description]
+        settings = cursor.fetchall()
+        return {'columns': columns, 'data': settings}
+
+    def get_all_join_requests_data(self):
+        cursor = self.conn.execute('SELECT * FROM join_requests')
+        columns = [description[0] for description in cursor.description]
+        requests = cursor.fetchall()
+        return {'columns': columns, 'data': requests}
+
+    def restore_backup(self, backup_data):
+        try:
+            self.conn.execute('BEGIN TRANSACTION')
+            
+            self.conn.execute('DELETE FROM users')
+            self.conn.execute('DELETE FROM categories')
+            self.conn.execute('DELETE FROM content')
+            self.conn.execute('DELETE FROM bot_settings')
+            self.conn.execute('DELETE FROM join_requests')
+            
+            users_data = backup_data.get('users', {})
+            if users_data.get('data'):
+                columns = users_data['columns']
+                placeholders = ', '.join(['?'] * len(columns))
+                for row in users_data['data']:
+                    self.conn.execute(f'INSERT INTO users ({", ".join(columns)}) VALUES ({placeholders})', row)
+            
+            categories_data = backup_data.get('categories', {})
+            if categories_data.get('data'):
+                columns = categories_data['columns']
+                placeholders = ', '.join(['?'] * len(columns))
+                for row in categories_data['data']:
+                    self.conn.execute(f'INSERT INTO categories ({", ".join(columns)}) VALUES ({placeholders})', row)
+            
+            content_data = backup_data.get('content', {})
+            if content_data.get('data'):
+                columns = content_data['columns']
+                placeholders = ', '.join(['?'] * len(columns))
+                for row in content_data['data']:
+                    self.conn.execute(f'INSERT INTO content ({", ".join(columns)}) VALUES ({placeholders})', row)
+            
+            settings_data = backup_data.get('settings', {})
+            if settings_data.get('data'):
+                columns = settings_data['columns']
+                placeholders = ', '.join(['?'] * len(columns))
+                for row in settings_data['data']:
+                    self.conn.execute(f'INSERT INTO bot_settings ({", ".join(columns)}) VALUES ({placeholders})', row)
+            
+            requests_data = backup_data.get('join_requests', {})
+            if requests_data.get('data'):
+                columns = requests_data['columns']
+                placeholders = ', '.join(['?'] * len(columns))
+                for row in requests_data['data']:
+                    self.conn.execute(f'INSERT INTO join_requests ({", ".join(columns)}) VALUES ({placeholders})', row)
+            
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.execute('ROLLBACK')
+            logger.error(f"خطأ في استعادة النسخة الاحتياطية: {e}")
+            return False
+
+    def add_backup_record(self, backup_name, file_size, description=""):
+        self.conn.execute('''
+            INSERT INTO backups (backup_name, file_size, description)
+            VALUES (?, ?, ?)
+        ''', (backup_name, file_size, description))
+        self.conn.commit()
+
+    def get_backup_history(self):
+        cursor = self.conn.execute('SELECT * FROM backups ORDER BY backup_date DESC LIMIT 10')
+        return cursor.fetchall()
+
 db = Database()
 
 def get_admin_id():
@@ -244,7 +362,6 @@ def get_category_name_by_id(category_id):
     category = db.get_category_by_id(category_id)
     return category[1] if category else "غير معروف"
 
-# لوحات المفاتيح للمستخدم
 def user_main_menu():
     keyboard = [
         [KeyboardButton("📁 الاقسام"), KeyboardButton("👤 الملف الشخصي")],
@@ -268,7 +385,6 @@ def user_content_menu(category_name, category_id):
     content_items = db.get_content_by_category(category_id)
     keyboard = []
     
-    # استخدام الأزرار الداخلية لعرض المحتوى
     for content in content_items:
         short_title = content[1][:20] + "..." if len(content[1]) > 20 else content[1]
         keyboard.append([InlineKeyboardButton(f"📄 {short_title}", callback_data=f"content_{content[0]}")])
@@ -277,13 +393,12 @@ def user_content_menu(category_name, category_id):
     
     return InlineKeyboardMarkup(keyboard)
 
-# لوحات المفاتيح للمدير - محسنة
 def admin_main_menu():
     keyboard = [
         [KeyboardButton("👥 إدارة المستخدمين"), KeyboardButton("📁 إدارة الأقسام")],
         [KeyboardButton("📦 إدارة المحتوى"), KeyboardButton("⚙️ إعدادات البوت")],
         [KeyboardButton("📊 الإحصائيات"), KeyboardButton("📢 البث الجماعي")],
-        [KeyboardButton("🔙 وضع المستخدم")]
+        [KeyboardButton("💾 النسخ الاحتياطي"), KeyboardButton("🔙 وضع المستخدم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -317,6 +432,14 @@ def admin_settings_menu():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def admin_backup_menu():
+    keyboard = [
+        [KeyboardButton("📥 تنزيل نسخة"), KeyboardButton("📤 رفع نسخة")],
+        [KeyboardButton("📋 سجل النسخ"), KeyboardButton("🔧 إعدادات النسخ")],
+        [KeyboardButton("🔙 لوحة التحكم")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 def admin_categories_list():
     categories = db.get_categories()
     keyboard = []
@@ -328,13 +451,112 @@ def admin_categories_list():
 def admin_content_list():
     content_items = db.get_all_content()
     keyboard = []
-    for content in content_items[:15]:  # عرض أول 15 عنصر فقط
+    for content in content_items[:15]:
         short_title = content[1][:15] + "..." if len(content[1]) > 15 else content[1]
         keyboard.append([InlineKeyboardButton(f"🗑 {short_title}", callback_data=f"delete_content_{content[0]}")])
     keyboard.append([InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_delete")])
     return InlineKeyboardMarkup(keyboard)
 
-# معالجة START
+async def create_and_send_backup(update: Update, context: CallbackContext):
+    try:
+        backup_data = db.create_backup()
+        json_data = json.dumps(backup_data, ensure_ascii=False, indent=2)
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.writestr('backup_data.json', json_data)
+        
+        zip_buffer.seek(0)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"bot_backup_{timestamp}.Mkfrky"
+        
+        if isinstance(update, Update) and update.message:
+            await update.message.reply_document(
+                document=zip_buffer,
+                filename=filename,
+                caption=f"📦 النسخة الاحتياطية للبوت\n\n✅ تم إنشاء النسخة في: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n🔐 كلمة السر: {db.get_setting('backup_password')}"
+            )
+        else:
+            await update.callback_query.message.reply_document(
+                document=zip_buffer,
+                filename=filename,
+                caption=f"📦 النسخة الاحتياطية للبوت\n\n✅ تم إنشاء النسخة في: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n🔐 كلمة السر: {db.get_setting('backup_password')}"
+            )
+        
+        db.add_backup_record(filename, len(zip_buffer.getvalue()), "نسخة احتياطية تلقائية")
+        
+    except Exception as e:
+        error_msg = f"❌ خطأ في إنشاء النسخة الاحتياطية: {str(e)}"
+        if isinstance(update, Update) and update.message:
+            await update.message.reply_text(error_msg)
+        else:
+            await update.callback_query.message.reply_text(error_msg)
+
+async def restore_backup_from_file(update: Update, context: CallbackContext, file):
+    try:
+        file_content = await file.download_as_bytearray()
+        
+        zip_buffer = io.BytesIO(file_content)
+        with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
+            json_data = zip_file.read('backup_data.json').decode('utf-8')
+            backup_data = json.loads(json_data)
+        
+        success = db.restore_backup(backup_data)
+        
+        if success:
+            await update.message.reply_text(
+                f"✅ تم استعادة النسخة الاحتياطية بنجاح!\n\n"
+                f"📅 تاريخ النسخة: {backup_data.get('timestamp', 'غير معروف')}\n"
+                f"👥 المستخدمون: {len(backup_data.get('users', {}).get('data', []))}\n"
+                f"📁 الأقسام: {len(backup_data.get('categories', {}).get('data', []))}\n"
+                f"📦 المحتوى: {len(backup_data.get('content', {}).get('data', []))}",
+                reply_markup=admin_main_menu()
+            )
+            
+            filename = file.file_name
+            db.add_backup_record(filename, len(file_content), "استعادة نسخة احتياطية")
+        else:
+            await update.message.reply_text("❌ فشل في استعادة النسخة الاحتياطية")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ في استعادة النسخة الاحتياطية: {str(e)}")
+
+async def show_backup_history(update: Update, context: CallbackContext):
+    backups = db.get_backup_history()
+    
+    if backups:
+        history_text = "📋 سجل النسخ الاحتياطية:\n\n"
+        for backup in backups:
+            date = backup[3].split()[0] if backup[3] else "غير معروف"
+            size_kb = backup[4] / 1024 if backup[4] else 0
+            history_text += f"📁 {backup[1]}\n"
+            history_text += f"📅 {date} | 📊 {size_kb:.1f} KB\n"
+            if backup[5]:
+                history_text += f"📝 {backup[5]}\n"
+            history_text += "─" * 30 + "\n"
+    else:
+        history_text = "⚠️ لا توجد نسخ احتياطية سابقة"
+    
+    if hasattr(update, 'callback_query'):
+        await update.callback_query.message.reply_text(history_text)
+    else:
+        await update.message.reply_text(history_text)
+
+async def show_statistics(update: Update, context: CallbackContext):
+    total_users = len(db.get_all_users())
+    active_users = len(db.get_active_users(30))
+    total_content = len(db.get_all_content())
+    total_categories = len(db.get_categories())
+    
+    stats_text = f"📊 إحصائيات البوت:\n\n"
+    stats_text += f"👥 المستخدمون: {total_users}\n"
+    stats_text += f"🎯 النشطون: {active_users}\n"
+    stats_text += f"📦 المحتوى: {total_content}\n"
+    stats_text += f"📁 الأقسام: {total_categories}"
+    
+    await update.message.reply_text(stats_text)
+
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
@@ -397,7 +619,6 @@ async def start(update: Update, context: CallbackContext) -> None:
             reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔄 تحديث الحالة")]], resize_keyboard=True)
         )
 
-# معالجة Callback - محسنة
 async def handle_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await query.answer()
@@ -498,14 +719,36 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
     
     elif data == 'cancel_delete':
         await query.edit_message_text("❌ تم إلغاء العملية", reply_markup=admin_main_menu())
+    
+    elif data == 'download_backup':
+        if not is_admin(user_id):
+            await query.edit_message_text("❌ ليس لديك صلاحية.")
+            return
+        
+        await create_and_send_backup(update, context)
+    
+    elif data == 'backup_history':
+        if not is_admin(user_id):
+            await query.edit_message_text("❌ ليس لديك صلاحية.")
+            return
+        
+        await show_backup_history(update, context)
 
-# معالجة الوسائط
 async def handle_media(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
     
     if not is_admin(user_id):
         return
+    
+    if update.message.document:
+        file = update.message.document
+        filename = file.file_name
+        
+        if filename and filename.endswith('.Mkfrky'):
+            await update.message.reply_text("🔄 جاري استعادة النسخة الاحتياطية...")
+            await restore_backup_from_file(update, context, file)
+            return
     
     if context.user_data.get('content_stage') == 'content':
         content_type = None
@@ -538,7 +781,6 @@ async def handle_media(update: Update, context: CallbackContext) -> None:
                 await update.message.reply_text("⚠️ لا توجد أقسام. أضف قسم أولاً.")
                 context.user_data.clear()
 
-# معالجة رسائل المستخدمين
 async def handle_user_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -560,7 +802,6 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
                 await update.message.reply_text("⏳ لا يزال طلبك قيد المراجعة...")
         return
     
-    # معالجة الأوامر الرئيسية
     if text == "🏠 الرئيسية":
         await update.message.reply_text("🏠 الرئيسية", reply_markup=user_main_menu())
     
@@ -589,7 +830,6 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text(contact_text)
     
     else:
-        # التحقق إذا كان النص هو اسم قسم
         category_id = get_category_id_by_name(text)
         if category_id:
             content_items = db.get_content_by_category(category_id)
@@ -604,7 +844,6 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         
         await update.message.reply_text("❌ لم أفهم طلبك.", reply_markup=user_main_menu())
 
-# معالجة رسائل المدير - محسنة وخالية من الأخطاء
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -615,8 +854,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
 
     db.update_user_activity(user_id)
 
-    # تنظيف الحالات عند العودة للوحة التحكم
-    if text in ["🔙 لوحة التحكم", "🔙 إدارة الأقسام", "🔙 إدارة المحتوى", "🔙 إدارة المستخدمين"]:
+    if text in ["🔙 لوحة التحكم", "🔙 إدارة الأقسام", "🔙 إدارة المحتوى", "🔙 إدارة المستخدمين", "🔙 النسخ الاحتياطي"]:
         context.user_data.clear()
 
     if text == "🔙 وضع المستخدم":
@@ -640,6 +878,10 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text("⚙️ إعدادات البوت", reply_markup=admin_settings_menu())
         return
     
+    elif text == "💾 النسخ الاحتياطي":
+        await update.message.reply_text("💾 نظام النسخ الاحتياطي", reply_markup=admin_backup_menu())
+        return
+    
     elif text == "📊 الإحصائيات":
         await show_statistics(update, context)
         return
@@ -649,7 +891,35 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data['broadcasting'] = True
         return
     
-    # إدارة المستخدمين
+    elif text == "📥 تنزيل نسخة":
+        await update.message.reply_text("🔄 جاري إنشاء النسخة الاحتياطية...")
+        await create_and_send_backup(update, context)
+        return
+    
+    elif text == "📤 رفع نسخة":
+        await update.message.reply_text(
+            "📤 لرفع نسخة احتياطية:\n\n"
+            "1. أرسل ملف النسخة الاحتياطية (بصيغة .Mkfrky)\n"
+            "2. انتظر اكتمال الاستعادة\n\n"
+            "⚠️ تحذير: سيتم استبدال جميع البيانات الحالية!"
+        )
+        context.user_data['awaiting_backup_file'] = True
+        return
+    
+    elif text == "📋 سجل النسخ":
+        await show_backup_history(update, context)
+        return
+    
+    elif text == "🔧 إعدادات النسخ":
+        current_password = db.get_setting('backup_password')
+        await update.message.reply_text(
+            f"🔧 إعدادات النسخ الاحتياطي:\n\n"
+            f"🔐 كلمة السر الحالية: {current_password}\n\n"
+            f"أرسل كلمة السر الجديدة:"
+        )
+        context.user_data['editing_backup_password'] = True
+        return
+    
     elif text == "📋 عرض المستخدمين":
         users = db.get_all_users()
         if users:
@@ -677,7 +947,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data['awaiting_user_delete'] = True
         return
     
-    # إدارة الأقسام - محسنة
     elif text == "➕ إضافة قسم":
         await update.message.reply_text("أرسل اسم القسم الجديد:")
         context.user_data['adding_category'] = True
@@ -729,7 +998,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             await update.message.reply_text("⚠️ لا توجد أقسام.")
         return
     
-    # إدارة المحتوى - محسنة
     elif text == "➕ إضافة محتوى":
         categories = db.get_categories()
         if not categories:
@@ -769,7 +1037,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             await update.message.reply_text("⚠️ لا يوجد محتوى.")
         return
     
-    # الإعدادات
     elif text == "✏️ رسالة الترحيب":
         current = db.get_setting('welcome_message')
         await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
@@ -802,7 +1069,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text(f"✅ تم {status} نظام الموافقة")
         return
     
-    # معالجة مراحل إضافة المحتوى
     elif context.user_data.get('content_stage') == 'type':
         if text in ["📝 نص", "📸 صورة", "🎥 فيديو"]:
             content_type_map = {"📝 نص": "text", "📸 صورة": "photo", "🎥 فيديو": "video"}
@@ -871,7 +1137,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             await update.message.reply_text("❌ قسم غير موجود. الرجاء اختيار قسم من القائمة.")
         return
     
-    # معالجة إدخال البيانات الأخرى
     elif context.user_data.get('awaiting_user_delete'):
         try:
             target_user_id = int(text)
@@ -894,6 +1159,12 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         if category_id:
             db.update_category(category_id, text)
             await update.message.reply_text(f"✅ تم تعديل القسم من '{old_name}' إلى '{text}'", reply_markup=admin_categories_menu())
+        context.user_data.clear()
+        return
+    
+    elif context.user_data.get('editing_backup_password'):
+        db.update_setting('backup_password', text)
+        await update.message.reply_text(f"✅ تم تحديث كلمة سر النسخ الاحتياطي إلى: {text}", reply_markup=admin_backup_menu())
         context.user_data.clear()
         return
     
@@ -940,21 +1211,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     else:
         await update.message.reply_text("👑 لوحة تحكم المدير", reply_markup=admin_main_menu())
 
-# دوال مساعدة
-async def show_statistics(update: Update, context: CallbackContext):
-    total_users = len(db.get_all_users())
-    active_users = len(db.get_active_users(30))
-    total_content = len(db.get_all_content())
-    total_categories = len(db.get_categories())
-    
-    stats_text = f"📊 إحصائيات البوت:\n\n"
-    stats_text += f"👥 المستخدمون: {total_users}\n"
-    stats_text += f"🎯 النشطون: {active_users}\n"
-    stats_text += f"📦 المحتوى: {total_content}\n"
-    stats_text += f"📁 الأقسام: {total_categories}"
-    
-    await update.message.reply_text(stats_text)
-
 async def error_handler(update: Update, context: CallbackContext) -> None:
     logger.error(f"حدث خطأ: {context.error}")
 
@@ -967,11 +1223,11 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message))
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_media))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_media))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
     
-    logger.info("🚀 بدء تشغيل البوت المحسن...")
+    logger.info("🚀 بدء تشغيل البوت الكامل مع نظام النسخ الاحتياطي...")
     application.run_polling()
 
 if __name__ == '__main__':
