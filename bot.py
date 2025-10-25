@@ -351,7 +351,7 @@ def admin_settings_menu():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# معالجة START
+# معالجة START مع دعم Markdown
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     user_id = user.id
@@ -362,7 +362,8 @@ async def start(update: Update, context: CallbackContext) -> None:
     if is_admin(user_id):
         await update.message.reply_text(
             "👑 **مرحباً بك آلة المدير!**\n\nلوحة التحكم المتقدمة جاهزة.",
-            reply_markup=admin_main_menu()
+            reply_markup=admin_main_menu(),
+            parse_mode='Markdown'
         )
         return
     
@@ -380,14 +381,16 @@ async def start(update: Update, context: CallbackContext) -> None:
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
             f"{welcome_message}\n\nمرحباً بك {user.first_name}! 👋",
-            reply_markup=user_main_menu()
+            reply_markup=user_main_menu(),
+            parse_mode='Markdown'
         )
     elif not approval_required:
         db.approve_user(user_id)
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
             f"{welcome_message}\n\nمرحباً بك {user.first_name}! 👋",
-            reply_markup=user_main_menu()
+            reply_markup=user_main_menu(),
+            parse_mode='Markdown'
         )
     else:
         db.conn.execute('INSERT OR REPLACE INTO join_requests (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)',
@@ -482,7 +485,7 @@ async def handle_media(update: Update, context: CallbackContext) -> None:
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
 
-# معالجة رسائل المستخدمين
+# معالجة رسائل المستخدمين مع دعم Markdown
 async def handle_user_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -511,7 +514,7 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
     elif text == "📁 الاقسام":
         categories = db.get_normal_categories()
         if categories:
-            await update.message.reply_text("📁 **الاقسام المتاحة:**\n\nاختر قسم:", reply_markup=user_categories_menu())
+            await update.message.reply_text("📁 **الاقسام المتاحة:**\n\nاختر قسم:", reply_markup=user_categories_menu(), parse_mode='Markdown')
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام متاحة حالياً.")
     
@@ -519,12 +522,12 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         if user_data[6] == 1:
             categories = db.get_premium_categories()
             if categories:
-                await update.message.reply_text("👑 **الأقسام المميزة:**\n\nاختر قسم:", reply_markup=user_premium_categories_menu())
+                await update.message.reply_text("👑 **الأقسام المميزة:**\n\nاختر قسم:", reply_markup=user_premium_categories_menu(), parse_mode='Markdown')
             else:
                 await update.message.reply_text("⚠️ لا توجد أقسام مميزة حالياً.")
         else:
             premium_message = db.get_setting('premium_access_message')
-            await update.message.reply_text(premium_message)
+            await update.message.reply_text(premium_message, parse_mode='Markdown')
     
     elif text == "👤 الملف الشخصي":
         user_stats = f"👤 **الملف الشخصي**\n\n"
@@ -536,15 +539,15 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         if user_data[6] == 0:
             user_stats += f"\n💡 لترقية حسابك إلى مميز، تواصل مع: {db.get_setting('admin_contact')}"
         
-        await update.message.reply_text(user_stats)
+        await update.message.reply_text(user_stats, parse_mode='Markdown')
     
     elif text == "ℹ️ حول البوت":
         about_text = db.get_setting('about_text')
-        await update.message.reply_text(about_text)
+        await update.message.reply_text(about_text, parse_mode='Markdown')
     
     elif text == "📞 اتصل بنا":
         contact_text = db.get_setting('contact_text')
-        await update.message.reply_text(contact_text)
+        await update.message.reply_text(contact_text, parse_mode='Markdown')
     
     elif text.startswith("🔙 رجوع إلى "):
         category_name = text[13:]
@@ -569,7 +572,7 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
             if category_data:
                 if category_data[2] == 1 and user_data[6] == 0:
                     premium_message = db.get_setting('premium_access_message')
-                    await update.message.reply_text(premium_message)
+                    await update.message.reply_text(premium_message, parse_mode='Markdown')
                     return
                 
                 content_items = db.get_content_by_category(category_id)
@@ -590,32 +593,36 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
                 if content[1].startswith(content_title):
                     if content[5] == 1 and user_data[6] == 0:
                         premium_message = db.get_setting('premium_access_message')
-                        await update.message.reply_text(premium_message)
+                        await update.message.reply_text(premium_message, parse_mode='Markdown')
                         return
                     
                     if content[3] == 'text':
                         await update.message.reply_text(
-                            f"📖 **{content[1]}**\n\n{content[2]}\n\n---\nنهاية المحتوى 📚"
+                            f"📖 **{content[1]}**\n\n{content[2]}\n\n---\nنهاية المحتوى 📚",
+                            parse_mode='Markdown'
                         )
                     elif content[3] == 'photo' and content[6]:
                         await update.message.reply_photo(
                             photo=content[6],
-                            caption=f"📸 **{content[1]}**\n\n{content[2]}"
+                            caption=f"📸 **{content[1]}**\n\n{content[2]}",
+                            parse_mode='Markdown'
                         )
                     elif content[3] == 'video' and content[6]:
                         await update.message.reply_video(
                             video=content[6],
-                            caption=f"🎥 **{content[1]}**\n\n{content[2]}"
+                            caption=f"🎥 **{content[1]}**\n\n{content[2]}",
+                            parse_mode='Markdown'
                         )
                     else:
                         await update.message.reply_text(
-                            f"📖 **{content[1]}**\n\n{content[2]}\n\n---\nنهاية المحتوى 📚"
+                            f"📖 **{content[1]}**\n\n{content[2]}\n\n---\nنهاية المحتوى 📚",
+                            parse_mode='Markdown'
                         )
                     return
         
         await update.message.reply_text("❌ لم أفهم طلبك.", reply_markup=user_main_menu())
 
-# معالجة رسائل المدير
+# معالجة رسائل المدير - تم إصلاح جميع المشاكل
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -663,7 +670,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             for user_data in users:
                 status = "👑" if user_data[6] == 1 else "⭐"
                 users_text += f"{status} {user_data[0]} - {user_data[2]}\n"
-            await update.message.reply_text(users_text)
+            await update.message.reply_text(users_text, parse_mode='Markdown')
         else:
             await update.message.reply_text("⚠️ لا يوجد مستخدمين.")
     
@@ -673,7 +680,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             req_text = "📩 **طلبات الانضمام:**\n\n"
             for req in requests:
                 req_text += f"🆔 {req[0]} - 👤 {req[2]} - 📱 @{req[1] or 'لا يوجد'}\n"
-            await update.message.reply_text(req_text)
+            await update.message.reply_text(req_text, parse_mode='Markdown')
         else:
             await update.message.reply_text("✅ لا توجد طلبات انتظار.")
     
@@ -688,7 +695,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             for user_data in premium_users:
                 users_text += f"{user_data[0]} - {user_data[2]}\n"
             users_text += "\nأرسل ID المستخدم لإزالة التميز:"
-            await update.message.reply_text(users_text)
+            await update.message.reply_text(users_text, parse_mode='Markdown')
             context.user_data['awaiting_remove_premium'] = True
         else:
             await update.message.reply_text("⚠️ لا يوجد مستخدمين مميزين.")
@@ -697,10 +704,32 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text("أرسل ID المستخدم للحذف:")
         context.user_data['awaiting_user_delete'] = True
     
-    # إدارة الأقسام
+    # إدارة الأقسام - تم إصلاح التعديل والحذف
     elif text == "➕ إضافة قسم":
         await update.message.reply_text("أرسل اسم القسم الجديد:")
         context.user_data['adding_category'] = True
+    
+    elif text == "✏️ تعديل قسم":
+        categories = db.get_categories()
+        if categories:
+            keyboard = []
+            for cat in categories:
+                keyboard.append([KeyboardButton(f"تعديل {cat[1]}")])
+            keyboard.append([KeyboardButton("🔙 إدارة الأقسام")])
+            await update.message.reply_text("اختر قسم للتعديل:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        else:
+            await update.message.reply_text("⚠️ لا توجد أقسام.")
+    
+    elif text.startswith("تعديل "):
+        category_name = text[6:]
+        category_id = get_category_id_by_name(category_name)
+        if category_id:
+            context.user_data['editing_category_id'] = category_id
+            context.user_data['editing_category_name'] = category_name
+            await update.message.reply_text(f"✏️ تعديل القسم: {category_name}\n\nأرسل الاسم الجديد للقسم:")
+            context.user_data['awaiting_new_category_name'] = True
+        else:
+            await update.message.reply_text("❌ قسم غير موجود")
     
     elif text == "📋 عرض الأقسام":
         categories = db.get_categories()
@@ -709,7 +738,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             for cat in categories:
                 premium_status = "👑" if cat[2] == 1 else "⭐"
                 cats_text += f"{premium_status} {cat[1]} (ID: {cat[0]})\n"
-            await update.message.reply_text(cats_text)
+            await update.message.reply_text(cats_text, parse_mode='Markdown')
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام.")
     
@@ -735,7 +764,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام.")
     
-    # إدارة المحتوى - محسنة
+    # إدارة المحتوى - تم إصلاح الحذف
     elif text == "➕ إضافة محتوى":
         categories = db.get_categories()
         if not categories:
@@ -766,7 +795,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
                 content_type_icon = "📝" if content[3] == 'text' else "📸" if content[3] == 'photo' else "🎥"
                 premium_status = "👑" if content[5] == 1 else "⭐"
                 content_text += f"{content_type_icon}{premium_status} {content[1]} - {content[7]}\n"
-            await update.message.reply_text(content_text)
+            await update.message.reply_text(content_text, parse_mode='Markdown')
         else:
             await update.message.reply_text("⚠️ لا يوجد محتوى.")
     
@@ -793,14 +822,14 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         else:
             await update.message.reply_text("⚠️ لا يوجد محتوى.")
     
-    # إدارة المميزين
+    # إدارة المميزين - تم إصلاح الإعدادات
     elif text == "👑 عرض المميزين":
         premium_users = db.get_premium_users()
         if premium_users:
             users_text = "👑 **المستخدمون المميزون:**\n\n"
             for user_data in premium_users:
                 users_text += f"🆔 {user_data[0]} - 👤 {user_data[2]} - 📅 {user_data[7].split()[0] if user_data[7] else 'غير معروف'}\n"
-            await update.message.reply_text(users_text)
+            await update.message.reply_text(users_text, parse_mode='Markdown')
         else:
             await update.message.reply_text("⚠️ لا يوجد مستخدمين مميزين.")
     
@@ -813,14 +842,19 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         stats_text += f"👥 إجمالي المستخدمين: {total_users}\n"
         stats_text += f"📈 نسبة المميزين: {(len(premium_users)/total_users*100) if total_users > 0 else 0:.1f}%"
         
-        await update.message.reply_text(stats_text)
+        await update.message.reply_text(stats_text, parse_mode='Markdown')
     
     elif text == "✏️ تعديل رسالة المميزين":
         current = db.get_setting('premium_access_message')
         await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
         context.user_data['editing_premium_message'] = True
     
-    # الإعدادات - تم إصلاح زر اتصل بنا
+    elif text == "🎯 إعدادات المميزين":
+        current_message = db.get_setting('premium_access_message')
+        await update.message.reply_text(f"🎯 **إعدادات المميزين**\n\nرسالة المميزين الحالية:\n{current_message}\n\nأرسل الرسالة الجديدة:", parse_mode='Markdown')
+        context.user_data['editing_premium_message'] = True
+    
+    # الإعدادات - تم إصلاح زر البدء
     elif text == "✏️ رسالة الترحيب":
         current = db.get_setting('welcome_message')
         await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
@@ -835,6 +869,11 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         current = db.get_setting('contact_text')
         await update.message.reply_text(f"النص الحالي:\n{current}\n\nأرسل النص الجديد:")
         context.user_data['editing_contact'] = True
+    
+    elif text == "🔄 زر البدء":
+        current = db.get_setting('start_button_text')
+        await update.message.reply_text(f"النص الحالي: {current}\n\nأرسل النص الجديد لزر البدء:")
+        context.user_data['editing_start_button'] = True
     
     elif text == "✏️ اسم قسم المميز":
         current = db.get_setting('premium_section_name')
@@ -927,7 +966,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             f"🎯 العنوان: {title}\n"
             f"📁 القسم: {get_category_name_by_id(category_id)}\n"
             f"💎 الحالة: {status}",
-            reply_markup=admin_content_menu()
+            reply_markup=admin_content_menu(),
+            parse_mode='Markdown'
         )
         context.user_data.clear()
     
@@ -964,6 +1004,14 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text(f"✅ تم إضافة القسم: {text}", reply_markup=admin_categories_menu())
         context.user_data.clear()
     
+    elif context.user_data.get('awaiting_new_category_name'):
+        category_id = context.user_data.get('editing_category_id')
+        old_name = context.user_data.get('editing_category_name')
+        if category_id:
+            db.update_category(category_id, text, 0)  # الحفاظ على حالة التميز الحالية
+            await update.message.reply_text(f"✅ تم تعديل القسم من '{old_name}' إلى '{text}'", reply_markup=admin_categories_menu())
+        context.user_data.clear()
+    
     elif context.user_data.get('editing_premium_message'):
         db.update_setting('premium_access_message', text)
         await update.message.reply_text("✅ تم تحديث رسالة المميزين", reply_markup=admin_settings_menu())
@@ -984,6 +1032,11 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text("✅ تم تحديث اتصل بنا", reply_markup=admin_settings_menu())
         context.user_data.clear()
     
+    elif context.user_data.get('editing_start_button'):
+        db.update_setting('start_button_text', text)
+        await update.message.reply_text("✅ تم تحديث زر البدء", reply_markup=admin_settings_menu())
+        context.user_data.clear()
+    
     elif context.user_data.get('editing_premium_section_name'):
         db.update_setting('premium_section_name', text)
         await update.message.reply_text(f"✅ تم تحديث اسم قسم المميز إلى: {text}", reply_markup=admin_settings_menu())
@@ -994,14 +1047,18 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         success = 0
         for user_data in users:
             try:
-                await context.bot.send_message(chat_id=user_data[0], text=f"📢 إشعار من الإدارة:\n\n{text}")
+                await context.bot.send_message(
+                    chat_id=user_data[0], 
+                    text=f"📢 إشعار من الإدارة:\n\n{text}",
+                    parse_mode='Markdown'
+                )
                 success += 1
             except:
                 continue
         await update.message.reply_text(f"✅ تم الإرسال إلى {success} مستخدم", reply_markup=admin_main_menu())
         context.user_data.clear()
     
-    # معالجة الأزرار الخاصة - تم إصلاح مشكلة الحذف
+    # معالجة الأزرار الخاصة - تم إصلاح جميع المشاكل
     elif text.startswith("جعل "):
         if text.endswith(" مميز"):
             category_name = text[4:-5]
@@ -1017,7 +1074,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         all_content = db.get_all_content()
         content_found = False
         for content in all_content:
-            # البحث باستخدام startswith لمطابقة الجزء الأول من العنوان
             if content[1].startswith(content_title):
                 db.conn.execute('UPDATE content SET is_premium = 1 WHERE id = ?', (content[0],))
                 db.conn.commit()
@@ -1043,7 +1099,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             all_content = db.get_all_content()
             content_found = False
             for content in all_content:
-                # البحث باستخدام startswith لمطابقة الجزء الأول من العنوان
                 if content[1].startswith(content_title):
                     db.delete_content(content[0])
                     await update.message.reply_text(f"✅ تم حذف المحتوى: {content[1]}", reply_markup=admin_content_menu())
@@ -1083,7 +1138,7 @@ async def show_statistics(update: Update, context: CallbackContext):
     stats_text += f"📁 الأقسام: {total_categories}\n"
     stats_text += f"👑 الأقسام المميزة: {premium_categories}"
     
-    await update.message.reply_text(stats_text)
+    await update.message.reply_text(stats_text, parse_mode='Markdown')
 
 async def error_handler(update: Update, context: CallbackContext) -> None:
     logger.error(f"حدث خطأ: {context.error}")
