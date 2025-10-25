@@ -2,6 +2,8 @@ import os
 import logging
 import sqlite3
 import json
+import atexit
+import shutil
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
@@ -13,41 +15,196 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class Database:
+class FirebaseManager:
     def __init__(self):
-        self.conn = sqlite3.connect('content_bot.db', check_same_thread=False)
+        self.db = None
+        self.initialized = False
+        self.init_firebase()
+    
+    def init_firebase(self):
+        """تهيئة Firebase"""
+        try:
+            # محاولة استيراد Firebase
+            import firebase_admin
+            from firebase_admin import credentials, firestore
+            
+            # طرق مختلفة لتحميل credentials
+            if os.path.exists('firebase-key.json'):
+                cred = credentials.Certificate('firebase-key.json')
+                firebase_admin.initialize_app(cred)
+                self.db = firestore.client()
+                self.initialized = True
+                logger.info("✅ تم تهيئة Firebase بنجاح")
+            else:
+                logger.warning("❌ لم يتم العثور على ملف firebase-key.json")
+                
+        except ImportError:
+            logger.warning("❌ مكتبة firebase-admin غير مثبتة. قم بتثبيتها: pip install firebase-admin")
+        except Exception as e:
+            logger.error(f"❌ خطأ في تهيئة Firebase: {e}")
+    
+    def add_user_firebase(self, user_data):
+        if not self.initialized:
+            return False
+        
+        try:
+            user_ref = self.db.collection('users').document(str(user_data['user_id']))
+            user_ref.set({
+                'user_id': user_data['user_id'],
+                'username': user_data['username'],
+                'first_name': user_data['first_name'],
+                'last_name': user_data['last_name'],
+                'is_approved': user_data['is_approved'],
+                'is_admin': user_data['is_admin'],
+                'joined_date': datetime.now(),
+                'last_active': datetime.now()
+            })
+            return True
+        except Exception as e:
+            logger.error(f"❌ خطأ في إضافة مستخدم لـ Firebase: {e}")
+            return False
+    
+    def get_user_firebase(self, user_id):
+        if not self.initialized:
+            return None
+        
+        try:
+            user_ref = self.db.collection('users').document(str(user_id))
+            user_doc = user_ref.get()
+            return user_doc.to_dict() if user_doc.exists else None
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب مستخدم من Firebase: {e}")
+            return None
+    
+    def update_user_activity_firebase(self, user_id):
+        if not self.initialized:
+            return False
+        
+        try:
+            user_ref = self.db.collection('users').document(str(user_id))
+            user_ref.update({
+                'last_active': datetime.now()
+            })
+            return True
+        except Exception as e:
+            logger.error(f"❌ خطأ في تحديث نشاط المستخدم في Firebase: {e}")
+            return False
+    
+    def add_category_firebase(self, category_data):
+        if not self.initialized:
+            return None
+        
+        try:
+            category_ref = self.db.collection('categories').document()
+            category_data['created_date'] = datetime.now()
+            category_ref.set(category_data)
+            return category_ref.id
+        except Exception as e:
+            logger.error(f"❌ خطأ في إضافة قسم لـ Firebase: {e}")
+            return None
+    
+    def get_categories_firebase(self):
+        if not self.initialized:
+            return []
+        
+        try:
+            categories_ref = self.db.collection('categories')
+            docs = categories_ref.stream()
+            
+            categories = []
+            for doc in docs:
+                category_data = doc.to_dict()
+                category_data['id'] = doc.id
+                categories.append(category_data)
+            
+            return categories
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب الأقسام من Firebase: {e}")
+            return []
+    
+    def add_content_firebase(self, content_data):
+        if not self.initialized:
+            return None
+        
+        try:
+            content_ref = self.db.collection('content').document()
+            content_data['created_date'] = datetime.now()
+            content_ref.set(content_data)
+            return content_ref.id
+        except Exception as e:
+            logger.error(f"❌ خطأ في إضافة محتوى لـ Firebase: {e}")
+            return None
+    
+    def get_content_by_category_firebase(self, category_id):
+        if not self.initialized:
+            return []
+        
+        try:
+            content_ref = self.db.collection('content')
+            docs = content_ref.where('category_id', '==', category_id).stream()
+            
+            content_list = []
+            for doc in docs:
+                content_data = doc.to_dict()
+                content_data['id'] = doc.id
+                content_list.append(content_data)
+            
+            return content_list
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب المحتوى من Firebase: {e}")
+            return []
+    
+    def get_all_content_firebase(self):
+        if not self.initialized:
+            return []
+        
+        try:
+            content_ref = self.db.collection('content')
+            docs = content_ref.stream()
+            
+            content_list = []
+            for doc in docs:
+                content_data = doc.to_dict()
+                content_data['id'] = doc.id
+                content_list.append(content_data)
+            
+            return content_list
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب كل المحتوى من Firebase: {e}")
+            return []
+
+class LocalDatabase:
+    def __init__(self):
+        self.db_path = 'content_bot.db'
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.create_tables()
         self.create_admin()
         self.create_default_settings()
+        atexit.register(self.close_connection)
+        logger.info("✅ تم تهيئة قاعدة البيانات المحلية بنجاح")
+
+    def close_connection(self):
+        if hasattr(self, 'conn'):
+            self.conn.close()
 
     def create_tables(self):
-        # جدول المستخدمين
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS users (
+        tables = [
+            '''CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
                 last_name TEXT,
                 is_approved INTEGER DEFAULT 0,
                 is_admin INTEGER DEFAULT 0,
-                is_premium INTEGER DEFAULT 0,
                 joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # جدول الأقسام
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS categories (
+            )''',
+            '''CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE,
                 created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # جدول المحتوى
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS content (
+            )''',
+            '''CREATE TABLE IF NOT EXISTS content (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
                 content TEXT,
@@ -55,36 +212,34 @@ class Database:
                 category_id INTEGER,
                 file_id TEXT,
                 created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # جدول طلبات الانضمام
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS join_requests (
+            )''',
+            '''CREATE TABLE IF NOT EXISTS join_requests (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
                 last_name TEXT,
                 request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # جدول الإعدادات
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS bot_settings (
+            )''',
+            '''CREATE TABLE IF NOT EXISTS bot_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
-            )
-        ''')
+            )'''
+        ]
+        
+        for table in tables:
+            self.conn.execute(table)
         self.conn.commit()
 
     def create_admin(self):
         admin_id = int(os.getenv('ADMIN_ID', 123456789))
-        self.conn.execute('''
-            INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, is_approved, is_admin, is_premium)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (admin_id, 'admin', 'Admin', 'Bot', 1, 1, 1))
-        self.conn.commit()
+        try:
+            self.conn.execute('''
+                INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, is_approved, is_admin)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (admin_id, 'admin', 'Admin', 'Bot', 1, 1))
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"خطأ في إنشاء المدير: {e}")
 
     def create_default_settings(self):
         default_settings = [
@@ -96,9 +251,12 @@ class Database:
             ('auto_approve', '0'),
             ('admin_contact', '@username')
         ]
-        for key, value in default_settings:
-            self.conn.execute('INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)', (key, value))
-        self.conn.commit()
+        try:
+            for key, value in default_settings:
+                self.conn.execute('INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)', (key, value))
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"خطأ في إنشاء الإعدادات: {e}")
 
     def get_setting(self, key):
         cursor = self.conn.execute('SELECT value FROM bot_settings WHERE key = ?', (key,))
@@ -109,16 +267,17 @@ class Database:
         self.conn.execute('UPDATE bot_settings SET value = ? WHERE key = ?', (value, key))
         self.conn.commit()
 
-    def get_all_settings(self):
-        cursor = self.conn.execute('SELECT * FROM bot_settings')
-        return cursor.fetchall()
-
     def add_user(self, user_id, username, first_name, last_name, is_approved=False, is_admin=False):
-        self.conn.execute('''
-            INSERT OR REPLACE INTO users (user_id, username, first_name, last_name, is_approved, is_admin, last_active)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (user_id, username, first_name, last_name, is_approved, is_admin))
-        self.conn.commit()
+        try:
+            self.conn.execute('''
+                INSERT OR REPLACE INTO users (user_id, username, first_name, last_name, is_approved, is_admin, last_active)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (user_id, username, first_name, last_name, is_approved, is_admin))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"خطأ في إضافة المستخدم: {e}")
+            return False
 
     def update_user_activity(self, user_id):
         self.conn.execute('UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE user_id = ?', (user_id,))
@@ -158,9 +317,13 @@ class Database:
         self.conn.commit()
 
     def add_category(self, name):
-        self.conn.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (name,))
-        self.conn.commit()
-        return self.conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        try:
+            self.conn.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (name,))
+            self.conn.commit()
+            return self.conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        except Exception as e:
+            logger.error(f"خطأ في إضافة القسم: {e}")
+            return None
 
     def get_categories(self):
         cursor = self.conn.execute('SELECT * FROM categories ORDER BY name')
@@ -171,24 +334,31 @@ class Database:
         self.conn.commit()
 
     def delete_category(self, category_id):
-        # التحقق أولاً من وجود القسم
-        cursor = self.conn.execute('SELECT * FROM categories WHERE id = ?', (category_id,))
-        category = cursor.fetchone()
-        if not category:
+        try:
+            cursor = self.conn.execute('SELECT * FROM categories WHERE id = ?', (category_id,))
+            category = cursor.fetchone()
+            if not category:
+                return False
+            
+            self.conn.execute('DELETE FROM categories WHERE id = ?', (category_id,))
+            self.conn.execute('DELETE FROM content WHERE category_id = ?', (category_id,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"خطأ في حذف القسم: {e}")
             return False
-        
-        self.conn.execute('DELETE FROM categories WHERE id = ?', (category_id,))
-        self.conn.execute('DELETE FROM content WHERE category_id = ?', (category_id,))
-        self.conn.commit()
-        return True
 
     def add_content(self, title, content, content_type, category_id, file_id=None):
-        self.conn.execute('''
-            INSERT INTO content (title, content, content_type, category_id, file_id) 
-            VALUES (?, ?, ?, ?, ?)
-        ''', (title, content, content_type, category_id, file_id))
-        self.conn.commit()
-        return self.conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        try:
+            self.conn.execute('''
+                INSERT INTO content (title, content, content_type, category_id, file_id) 
+                VALUES (?, ?, ?, ?, ?)
+            ''', (title, content, content_type, category_id, file_id))
+            self.conn.commit()
+            return self.conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        except Exception as e:
+            logger.error(f"خطأ في إضافة المحتوى: {e}")
+            return None
 
     def get_content_by_category(self, category_id):
         cursor = self.conn.execute('SELECT * FROM content WHERE category_id = ? ORDER BY created_date DESC', (category_id,))
@@ -203,15 +373,18 @@ class Database:
         return cursor.fetchall()
 
     def delete_content(self, content_id):
-        # التحقق أولاً من وجود المحتوى
-        cursor = self.conn.execute('SELECT * FROM content WHERE id = ?', (content_id,))
-        content = cursor.fetchone()
-        if not content:
+        try:
+            cursor = self.conn.execute('SELECT * FROM content WHERE id = ?', (content_id,))
+            content = cursor.fetchone()
+            if not content:
+                return False
+            
+            self.conn.execute('DELETE FROM content WHERE id = ?', (content_id,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"خطأ في حذف المحتوى: {e}")
             return False
-        
-        self.conn.execute('DELETE FROM content WHERE id = ?', (content_id,))
-        self.conn.commit()
-        return True
 
     def get_content(self, content_id):
         cursor = self.conn.execute('SELECT * FROM content WHERE id = ?', (content_id,))
@@ -221,11 +394,155 @@ class Database:
         cursor = self.conn.execute('SELECT * FROM categories WHERE id = ?', (category_id,))
         return cursor.fetchone()
 
-    def search_content_by_title(self, title):
-        cursor = self.conn.execute('SELECT * FROM content WHERE title LIKE ?', (f'%{title}%',))
-        return cursor.fetchall()
+class HybridDatabase:
+    def __init__(self):
+        self.firebase = FirebaseManager()
+        self.local_db = LocalDatabase()
+        self.sync_enabled = self.firebase.initialized
+        logger.info(f"🔥 حالة Firebase: {'مفعل' if self.sync_enabled else 'معطل'}")
+    
+    def add_user(self, user_id, username, first_name, last_name, is_approved=False, is_admin=False):
+        user_data = {
+            'user_id': user_id,
+            'username': username,
+            'first_name': first_name,
+            'last_name': last_name,
+            'is_approved': is_approved,
+            'is_admin': is_admin
+        }
+        
+        # حفظ محلي
+        local_success = self.local_db.add_user(user_id, username, first_name, last_name, is_approved, is_admin)
+        
+        # مزامنة مع Firebase
+        firebase_success = True
+        if self.sync_enabled:
+            firebase_success = self.firebase.add_user_firebase(user_data)
+        
+        return local_success and firebase_success
+    
+    def get_user(self, user_id):
+        # محاولة جلب من Firebase أولاً
+        if self.sync_enabled:
+            user_data = self.firebase.get_user_firebase(user_id)
+            if user_data:
+                return user_data
+        
+        # إذا فشل، جلب من SQLite
+        return self.local_db.get_user(user_id)
+    
+    def update_user_activity(self, user_id):
+        # تحديث محلي
+        self.local_db.update_user_activity(user_id)
+        
+        # مزامنة مع Firebase
+        if self.sync_enabled:
+            self.firebase.update_user_activity_firebase(user_id)
+    
+    def add_category(self, name):
+        category_data = {'name': name}
+        
+        # حفظ محلي
+        local_id = self.local_db.add_category(name)
+        
+        # مزامنة مع Firebase
+        firebase_id = None
+        if self.sync_enabled:
+            firebase_id = self.firebase.add_category_firebase(category_data)
+        
+        return {'local_id': local_id, 'firebase_id': firebase_id}
+    
+    def get_categories(self):
+        # محاولة جلب من Firebase أولاً
+        if self.sync_enabled:
+            categories = self.firebase.get_categories_firebase()
+            if categories:
+                return categories
+        
+        # إذا فشل، جلب من SQLite
+        return self.local_db.get_categories()
+    
+    def add_content(self, title, content, content_type, category_id, file_id=None):
+        content_data = {
+            'title': title,
+            'content': content,
+            'content_type': content_type,
+            'category_id': category_id,
+            'file_id': file_id
+        }
+        
+        # حفظ محلي
+        local_id = self.local_db.add_content(title, content, content_type, category_id, file_id)
+        
+        # مزامنة مع Firebase
+        firebase_id = None
+        if self.sync_enabled:
+            firebase_id = self.firebase.add_content_firebase(content_data)
+        
+        return {'local_id': local_id, 'firebase_id': firebase_id}
+    
+    def get_content_by_category(self, category_id):
+        # محاولة جلب من Firebase أولاً
+        if self.sync_enabled:
+            content = self.firebase.get_content_by_category_firebase(category_id)
+            if content:
+                return content
+        
+        # إذا فشل، جلب من SQLite
+        return self.local_db.get_content_by_category(category_id)
+    
+    def get_all_content(self):
+        # محاولة جلب من Firebase أولاً
+        if self.sync_enabled:
+            content = self.firebase.get_all_content_firebase()
+            if content:
+                return content
+        
+        # إذا فشل، جلب من SQLite
+        return self.local_db.get_all_content()
+    
+    # دوال SQLite الأصلية للتوافق
+    def get_setting(self, key):
+        return self.local_db.get_setting(key)
+    
+    def update_setting(self, key, value):
+        return self.local_db.update_setting(key, value)
+    
+    def approve_user(self, user_id):
+        return self.local_db.approve_user(user_id)
+    
+    def reject_user(self, user_id):
+        return self.local_db.reject_user(user_id)
+    
+    def get_all_users(self):
+        return self.local_db.get_all_users()
+    
+    def get_active_users(self, days=30):
+        return self.local_db.get_active_users(days)
+    
+    def get_pending_requests(self):
+        return self.local_db.get_pending_requests()
+    
+    def delete_user(self, user_id):
+        return self.local_db.delete_user(user_id)
+    
+    def update_category(self, category_id, name):
+        return self.local_db.update_category(category_id, name)
+    
+    def delete_category(self, category_id):
+        return self.local_db.delete_category(category_id)
+    
+    def delete_content(self, content_id):
+        return self.local_db.delete_content(content_id)
+    
+    def get_content(self, content_id):
+        return self.local_db.get_content(content_id)
+    
+    def get_category_by_id(self, category_id):
+        return self.local_db.get_category_by_id(category_id)
 
-db = Database()
+# تهيئة قاعدة البيانات الهجينة
+db = HybridDatabase()
 
 def get_admin_id():
     return int(os.getenv('ADMIN_ID', 123456789))
@@ -236,13 +553,22 @@ def is_admin(user_id):
 def get_category_id_by_name(name):
     categories = db.get_categories()
     for cat in categories:
-        if cat[1] == name:
-            return cat[0]
+        if isinstance(cat, tuple):  # SQLite tuple
+            if cat[1] == name:
+                return cat[0]
+        else:  # Firebase dict
+            if cat['name'] == name:
+                return cat['id']
     return None
 
 def get_category_name_by_id(category_id):
     category = db.get_category_by_id(category_id)
-    return category[1] if category else "غير معروف"
+    if category:
+        if isinstance(category, tuple):  # SQLite
+            return category[1]
+        else:  # Firebase
+            return category['name']
+    return "غير معروف"
 
 # لوحات المفاتيح للمستخدم
 def user_main_menu():
@@ -257,7 +583,8 @@ def user_categories_menu():
     keyboard = []
     row = []
     for i, cat in enumerate(categories):
-        row.append(KeyboardButton(cat[1]))
+        cat_name = cat[1] if isinstance(cat, tuple) else cat['name']
+        row.append(KeyboardButton(cat_name))
         if len(row) == 2 or i == len(categories) - 1:
             keyboard.append(row)
             row = []
@@ -268,21 +595,27 @@ def user_content_menu(category_name, category_id):
     content_items = db.get_content_by_category(category_id)
     keyboard = []
     
-    # استخدام الأزرار الداخلية لعرض المحتوى
     for content in content_items:
-        short_title = content[1][:20] + "..." if len(content[1]) > 20 else content[1]
-        keyboard.append([InlineKeyboardButton(f"📄 {short_title}", callback_data=f"content_{content[0]}")])
+        if isinstance(content, tuple):  # SQLite
+            content_title = content[1]
+            content_id = content[0]
+        else:  # Firebase
+            content_title = content['title']
+            content_id = content['id']
+        
+        short_title = content_title[:20] + "..." if len(content_title) > 20 else content_title
+        keyboard.append([InlineKeyboardButton(f"📄 {short_title}", callback_data=f"content_{content_id}")])
     
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_to_categories")])
-    
     return InlineKeyboardMarkup(keyboard)
 
-# لوحات المفاتيح للمدير - محسنة
+# لوحات المفاتيح للمدير
 def admin_main_menu():
     keyboard = [
         [KeyboardButton("👥 إدارة المستخدمين"), KeyboardButton("📁 إدارة الأقسام")],
         [KeyboardButton("📦 إدارة المحتوى"), KeyboardButton("⚙️ إعدادات البوت")],
         [KeyboardButton("📊 الإحصائيات"), KeyboardButton("📢 البث الجماعي")],
+        [KeyboardButton("💾 معلومات التخزين"), KeyboardButton("🔄 مزامنة البيانات")],
         [KeyboardButton("🔙 وضع المستخدم")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -317,23 +650,6 @@ def admin_settings_menu():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def admin_categories_list():
-    categories = db.get_categories()
-    keyboard = []
-    for cat in categories:
-        keyboard.append([InlineKeyboardButton(cat[1], callback_data=f"delete_cat_{cat[0]}")])
-    keyboard.append([InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_delete")])
-    return InlineKeyboardMarkup(keyboard)
-
-def admin_content_list():
-    content_items = db.get_all_content()
-    keyboard = []
-    for content in content_items[:15]:  # عرض أول 15 عنصر فقط
-        short_title = content[1][:15] + "..." if len(content[1]) > 15 else content[1]
-        keyboard.append([InlineKeyboardButton(f"🗑 {short_title}", callback_data=f"delete_content_{content[0]}")])
-    keyboard.append([InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_delete")])
-    return InlineKeyboardMarkup(keyboard)
-
 # معالجة START
 async def start(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
@@ -355,11 +671,18 @@ async def start(update: Update, context: CallbackContext) -> None:
     auto_approve = db.get_setting('auto_approve') == '1'
     approval_required = db.get_setting('approval_required') == '1'
     
-    if auto_approve and not user_data[4]:
+    if auto_approve and user_data and not (user_data[4] if isinstance(user_data, tuple) else user_data['is_approved']):
         db.approve_user(user_id)
         user_data = db.get_user(user_id)
     
-    if user_data and user_data[4] == 1:
+    is_approved = False
+    if user_data:
+        if isinstance(user_data, tuple):  # SQLite
+            is_approved = user_data[4] == 1
+        else:  # Firebase
+            is_approved = user_data.get('is_approved', False)
+    
+    if is_approved:
         welcome_message = db.get_setting('welcome_message')
         await update.message.reply_text(
             f"{welcome_message}\n\nمرحباً بك {user.first_name}! 👋",
@@ -373,9 +696,9 @@ async def start(update: Update, context: CallbackContext) -> None:
             reply_markup=user_main_menu()
         )
     else:
-        db.conn.execute('INSERT OR REPLACE INTO join_requests (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)',
+        db.local_db.conn.execute('INSERT OR REPLACE INTO join_requests (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)',
                        (user_id, user.username, user.first_name, user.last_name))
-        db.conn.commit()
+        db.local_db.conn.commit()
         
         admin_id = get_admin_id()
         keyboard = [
@@ -397,7 +720,7 @@ async def start(update: Update, context: CallbackContext) -> None:
             reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔄 تحديث الحالة")]], resize_keyboard=True)
         )
 
-# معالجة Callback - محسنة
+# معالجة Callback
 async def handle_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     await query.answer()
@@ -434,23 +757,38 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
         await query.edit_message_text(f"❌ تم رفض طلب المستخدم {target_user_id}")
     
     elif data.startswith('content_'):
-        content_id = int(data.split('_')[1])
-        content = db.get_content(content_id)
+        content_id = data.split('_')[1]
+        content = db.get_content(int(content_id)) if content_id.isdigit() else None
         
         if content:
-            if content[3] == 'text':
+            if isinstance(content, tuple):  # SQLite
+                content_title = content[1]
+                content_text = content[2]
+                content_type = content[3]
+                file_id = content[5]
+            else:  # Firebase
+                content_title = content['title']
+                content_text = content['content']
+                content_type = content['content_type']
+                file_id = content.get('file_id')
+            
+            if content_type == 'text':
                 await query.message.reply_text(
-                    f"📖 {content[1]}\n\n{content[2]}\n\n---\nنهاية المحتوى 📚"
+                    f"📖 {content_title}\n\n{content_text}\n\n---\nنهاية المحتوى 📚"
                 )
-            elif content[3] == 'photo' and content[5]:
+            elif content_type == 'photo' and file_id:
                 await query.message.reply_photo(
-                    photo=content[5],
-                    caption=f"📸 {content[1]}\n\n{content[2]}"
+                    photo=file_id,
+                    caption=f"📸 {content_title}\n\n{content_text}"
                 )
-            elif content[3] == 'video' and content[5]:
+            elif content_type == 'video' and file_id:
                 await query.message.reply_video(
-                    video=content[5],
-                    caption=f"🎥 {content[1]}\n\n{content[2]}"
+                    video=file_id,
+                    caption=f"🎥 {content_title}\n\n{content_text}"
+                )
+            else:
+                await query.message.reply_text(
+                    f"📖 {content_title}\n\n{content_text}\n\n---\nنهاية المحتوى 📚"
                 )
         else:
             await query.message.reply_text("❌ المحتوى غير موجود")
@@ -461,43 +799,6 @@ async def handle_callback(update: Update, context: CallbackContext) -> None:
             await query.message.edit_text("📁 الاقسام المتاحة:\n\nاختر قسم:", reply_markup=user_categories_menu())
         else:
             await query.message.edit_text("⚠️ لا توجد أقسام متاحة حالياً.")
-    
-    elif data.startswith('delete_cat_'):
-        if not is_admin(user_id):
-            await query.edit_message_text("❌ ليس لديك صلاحية.")
-            return
-            
-        category_id = int(data.split('_')[2])
-        category = db.get_category_by_id(category_id)
-        
-        if category:
-            success = db.delete_category(category_id)
-            if success:
-                await query.edit_message_text(f"✅ تم حذف القسم: {category[1]}", reply_markup=admin_categories_menu())
-            else:
-                await query.edit_message_text("❌ حدث خطأ أثناء حذف القسم")
-        else:
-            await query.edit_message_text("❌ القسم غير موجود")
-    
-    elif data.startswith('delete_content_'):
-        if not is_admin(user_id):
-            await query.edit_message_text("❌ ليس لديك صلاحية.")
-            return
-            
-        content_id = int(data.split('_')[2])
-        content = db.get_content(content_id)
-        
-        if content:
-            success = db.delete_content(content_id)
-            if success:
-                await query.edit_message_text(f"✅ تم حذف المحتوى: {content[1]}", reply_markup=admin_content_menu())
-            else:
-                await query.edit_message_text("❌ حدث خطأ أثناء حذف المحتوى")
-        else:
-            await query.edit_message_text("❌ المحتوى غير موجود")
-    
-    elif data == 'cancel_delete':
-        await query.edit_message_text("❌ تم إلغاء العملية", reply_markup=admin_main_menu())
 
 # معالجة الوسائط
 async def handle_media(update: Update, context: CallbackContext) -> None:
@@ -527,7 +828,8 @@ async def handle_media(update: Update, context: CallbackContext) -> None:
             if categories:
                 keyboard = []
                 for cat in categories:
-                    keyboard.append([KeyboardButton(cat[1])])
+                    cat_name = cat[1] if isinstance(cat, tuple) else cat['name']
+                    keyboard.append([KeyboardButton(cat_name)])
                 keyboard.append([KeyboardButton("🔙 إدارة المحتوى")])
                 
                 await update.message.reply_text(
@@ -551,11 +853,15 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
     db.update_user_activity(user_id)
     user_data = db.get_user(user_id)
     
-    if not user_data or user_data[4] == 0:
+    if not user_data:
         if text == "🔄 تحديث الحالة":
             user_data = db.get_user(user_id)
-            if user_data and user_data[4] == 1:
-                await update.message.reply_text("🎉 تمت الموافقة على طلبك!", reply_markup=user_main_menu())
+            if user_data:
+                is_approved = user_data[4] if isinstance(user_data, tuple) else user_data.get('is_approved', False)
+                if is_approved:
+                    await update.message.reply_text("🎉 تمت الموافقة على طلبك!", reply_markup=user_main_menu())
+                else:
+                    await update.message.reply_text("⏳ لا يزال طلبك قيد المراجعة...")
             else:
                 await update.message.reply_text("⏳ لا يزال طلبك قيد المراجعة...")
         return
@@ -575,7 +881,16 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         user_stats = f"👤 الملف الشخصي\n\n"
         user_stats += f"🆔 الرقم: {user_id}\n"
         user_stats += f"👤 الاسم: {user.first_name}\n"
-        user_stats += f"📅 تاريخ الانضمام: {user_data[7].split()[0] if user_data[7] else 'غير معروف'}\n"
+        
+        if isinstance(user_data, tuple):  # SQLite
+            user_stats += f"📅 تاريخ الانضمام: {user_data[6].split()[0] if user_data[6] else 'غير معروف'}\n"
+        else:  # Firebase
+            join_date = user_data.get('joined_date')
+            if isinstance(join_date, datetime):
+                user_stats += f"📅 تاريخ الانضمام: {join_date.strftime('%Y-%m-%d')}\n"
+            else:
+                user_stats += f"📅 تاريخ الانضمام: غير معروف\n"
+        
         user_stats += f"📱 آخر نشاط: الآن\n"
         
         await update.message.reply_text(user_stats)
@@ -604,7 +919,85 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
         
         await update.message.reply_text("❌ لم أفهم طلبك.", reply_markup=user_main_menu())
 
-# معالجة رسائل المدير - محسنة وخالية من الأخطاء
+# دوال مساعدة للمدير
+async def show_statistics(update: Update, context: CallbackContext):
+    total_users = len(db.get_all_users())
+    active_users = len(db.get_active_users(30))
+    total_content = len(db.get_all_content())
+    total_categories = len(db.get_categories())
+    pending_requests = len(db.get_pending_requests())
+    
+    stats_text = f"📊 إحصائيات البوت:\n\n"
+    stats_text += f"👥 إجمالي المستخدمين: {total_users}\n"
+    stats_text += f"🎯 النشطون: {active_users}\n"
+    stats_text += f"📦 المحتوى: {total_content}\n"
+    stats_text += f"📁 الأقسام: {total_categories}\n"
+    stats_text += f"⏳ طلبات الانتظار: {pending_requests}"
+    
+    await update.message.reply_text(stats_text)
+
+async def show_storage_info(update: Update, context: CallbackContext):
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ ليس لديك صلاحية.")
+        return
+    
+    info_text = "💾 معلومات التخزين:\n\n"
+    info_text += f"🔥 حالة Firebase: {'✅ مفعل' if db.firebase.initialized else '❌ معطل'}\n"
+    info_text += f"🔄 المزامنة: {'✅ مفعلة' if db.sync_enabled else '❌ معطلة'}\n"
+    
+    # إحصائيات SQLite
+    local_users = len(db.get_all_users())
+    local_categories = len(db.get_categories())
+    local_content = len(db.get_all_content())
+    
+    info_text += f"\n💿 SQLite:\n"
+    info_text += f"👥 المستخدمون: {local_users}\n"
+    info_text += f"📁 الأقسام: {local_categories}\n"
+    info_text += f"📦 المحتوى: {local_content}\n"
+    
+    if db.firebase.initialized:
+        # إحصائيات Firebase
+        firebase_categories = len(db.firebase.get_categories_firebase())
+        firebase_content = len(db.firebase.get_all_content_firebase())
+        
+        info_text += f"\n🔥 Firebase:\n"
+        info_text += f"📁 الأقسام: {firebase_categories}\n"
+        info_text += f"📦 المحتوى: {firebase_content}\n"
+    
+    await update.message.reply_text(info_text)
+
+async def sync_data(update: Update, context: CallbackContext):
+    """مزامنة البيانات من SQLite إلى Firebase"""
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ ليس لديك صلاحية.")
+        return
+    
+    if not db.firebase.initialized:
+        await update.message.reply_text("❌ Firebase غير مفعل")
+        return
+    
+    await update.message.reply_text("🔄 بدء مزامنة البيانات...")
+    
+    # مزامنة الأقسام
+    categories = db.local_db.get_categories()
+    for cat in categories:
+        db.firebase.add_category_firebase({'name': cat[1]})
+    
+    # مزامنة المحتوى
+    content_items = db.local_db.get_all_content()
+    for content in content_items:
+        content_data = {
+            'title': content[1],
+            'content': content[2],
+            'content_type': content[3],
+            'category_id': content[4],
+            'file_id': content[5]
+        }
+        db.firebase.add_content_firebase(content_data)
+    
+    await update.message.reply_text("✅ تمت مزامنة البيانات بنجاح")
+
+# معالجة رسائل المدير
 async def handle_admin_message(update: Update, context: CallbackContext) -> None:
     user = update.message.from_user
     text = update.message.text
@@ -649,13 +1042,24 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data['broadcasting'] = True
         return
     
+    elif text == "💾 معلومات التخزين":
+        await show_storage_info(update, context)
+        return
+
+    elif text == "🔄 مزامنة البيانات":
+        await sync_data(update, context)
+        return
+    
     # إدارة المستخدمين
     elif text == "📋 عرض المستخدمين":
         users = db.get_all_users()
         if users:
             users_text = "👥 المستخدمون:\n\n"
             for user_data in users:
-                users_text += f"🆔 {user_data[0]} - 👤 {user_data[2]}\n"
+                if isinstance(user_data, tuple):  # SQLite
+                    users_text += f"🆔 {user_data[0]} - 👤 {user_data[2]}\n"
+                else:  # Firebase
+                    users_text += f"🆔 {user_data['user_id']} - 👤 {user_data['first_name']}\n"
             await update.message.reply_text(users_text)
         else:
             await update.message.reply_text("⚠️ لا يوجد مستخدمين.")
@@ -677,7 +1081,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         context.user_data['awaiting_user_delete'] = True
         return
     
-    # إدارة الأقسام - محسنة
+    # إدارة الأقسام
     elif text == "➕ إضافة قسم":
         await update.message.reply_text("أرسل اسم القسم الجديد:")
         context.user_data['adding_category'] = True
@@ -688,7 +1092,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         if categories:
             keyboard = []
             for cat in categories:
-                keyboard.append([KeyboardButton(f"تعديل {cat[1]}")])
+                cat_name = cat[1] if isinstance(cat, tuple) else cat['name']
+                keyboard.append([KeyboardButton(f"تعديل {cat_name}")])
             keyboard.append([KeyboardButton("🔙 إدارة الأقسام")])
             await update.message.reply_text("اختر قسم للتعديل:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         else:
@@ -712,7 +1117,10 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         if categories:
             cats_text = "📁 جميع الأقسام:\n\n"
             for cat in categories:
-                cats_text += f"📁 {cat[1]} (ID: {cat[0]})\n"
+                if isinstance(cat, tuple):  # SQLite
+                    cats_text += f"📁 {cat[1]} (ID: {cat[0]})\n"
+                else:  # Firebase
+                    cats_text += f"📁 {cat['name']} (ID: {cat['id']})\n"
             await update.message.reply_text(cats_text)
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام.")
@@ -721,15 +1129,18 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     elif text == "🗑 حذف قسم":
         categories = db.get_categories()
         if categories:
-            await update.message.reply_text(
-                "اختر قسم للحذف:",
-                reply_markup=admin_categories_list()
-            )
+            keyboard = []
+            for cat in categories:
+                cat_name = cat[1] if isinstance(cat, tuple) else cat['name']
+                cat_id = cat[0] if isinstance(cat, tuple) else cat['id']
+                keyboard.append([InlineKeyboardButton(cat_name, callback_data=f"delete_cat_{cat_id}")])
+            keyboard.append([InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_delete")])
+            await update.message.reply_text("اختر قسم للحذف:", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             await update.message.reply_text("⚠️ لا توجد أقسام.")
         return
     
-    # إدارة المحتوى - محسنة
+    # إدارة المحتوى
     elif text == "➕ إضافة محتوى":
         categories = db.get_categories()
         if not categories:
@@ -751,8 +1162,12 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         if content_items:
             content_text = "📦 جميع المحتويات:\n\n"
             for content in content_items:
-                content_type_icon = "📝" if content[3] == 'text' else "📸" if content[3] == 'photo' else "🎥"
-                content_text += f"{content_type_icon} {content[1]} - {get_category_name_by_id(content[4])}\n"
+                if isinstance(content, tuple):  # SQLite
+                    content_type_icon = "📝" if content[3] == 'text' else "📸" if content[3] == 'photo' else "🎥"
+                    content_text += f"{content_type_icon} {content[1]} - {get_category_name_by_id(content[4])}\n"
+                else:  # Firebase
+                    content_type_icon = "📝" if content['content_type'] == 'text' else "📸" if content['content_type'] == 'photo' else "🎥"
+                    content_text += f"{content_type_icon} {content['title']} - {get_category_name_by_id(content['category_id'])}\n"
             await update.message.reply_text(content_text)
         else:
             await update.message.reply_text("⚠️ لا يوجد محتوى.")
@@ -761,10 +1176,19 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     elif text == "🗑 حذف محتوى":
         content_items = db.get_all_content()
         if content_items:
-            await update.message.reply_text(
-                "اختر محتوى للحذف:",
-                reply_markup=admin_content_list()
-            )
+            keyboard = []
+            for content in content_items[:15]:
+                if isinstance(content, tuple):  # SQLite
+                    content_title = content[1]
+                    content_id = content[0]
+                else:  # Firebase
+                    content_title = content['title']
+                    content_id = content['id']
+                
+                short_title = content_title[:15] + "..." if len(content_title) > 15 else content_title
+                keyboard.append([InlineKeyboardButton(f"🗑 {short_title}", callback_data=f"delete_content_{content_id}")])
+            keyboard.append([InlineKeyboardButton("🔙 إلغاء", callback_data="cancel_delete")])
+            await update.message.reply_text("اختر محتوى للحذف:", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             await update.message.reply_text("⚠️ لا يوجد محتوى.")
         return
@@ -833,7 +1257,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             if categories:
                 keyboard = []
                 for cat in categories:
-                    keyboard.append([KeyboardButton(cat[1])])
+                    cat_name = cat[1] if isinstance(cat, tuple) else cat['name']
+                    keyboard.append([KeyboardButton(cat_name)])
                 keyboard.append([KeyboardButton("🔙 إدارة المحتوى")])
                 
                 await update.message.reply_text(
@@ -854,7 +1279,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
             description = context.user_data.get('content_description', '')
             file_id = context.user_data.get('content_file_id')
             
-            content_id = db.add_content(title, description, content_type, category_id, file_id)
+            result = db.add_content(title, description, content_type, category_id, file_id)
             
             content_type_name = "نص" if content_type == 'text' else "صورة" if content_type == 'photo' else "فيديو"
             
@@ -863,7 +1288,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
                 f"📝 النوع: {content_type_name}\n"
                 f"🎯 العنوان: {title}\n"
                 f"📁 القسم: {category_name}\n"
-                f"🆔 الرقم: {content_id}",
+                f"💿 المحلي: {result.get('local_id', 'N/A')}\n"
+                f"🔥 Firebase: {result.get('firebase_id', 'N/A')}",
                 reply_markup=admin_content_menu()
             )
             context.user_data.clear()
@@ -883,8 +1309,8 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         return
     
     elif context.user_data.get('adding_category'):
-        category_id = db.add_category(text)
-        await update.message.reply_text(f"✅ تم إضافة القسم: {text} (ID: {category_id})", reply_markup=admin_categories_menu())
+        result = db.add_category(text)
+        await update.message.reply_text(f"✅ تم إضافة القسم: {text} (المحلي: {result.get('local_id', 'N/A')}, Firebase: {result.get('firebase_id', 'N/A')})", reply_markup=admin_categories_menu())
         context.user_data.clear()
         return
     
@@ -926,8 +1352,9 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         success = 0
         for user_data in users:
             try:
+                user_id = user_data[0] if isinstance(user_data, tuple) else user_data['user_id']
                 await context.bot.send_message(
-                    chat_id=user_data[0], 
+                    chat_id=user_id, 
                     text=f"📢 إشعار من الإدارة:\n\n{text}"
                 )
                 success += 1
@@ -939,21 +1366,6 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     
     else:
         await update.message.reply_text("👑 لوحة تحكم المدير", reply_markup=admin_main_menu())
-
-# دوال مساعدة
-async def show_statistics(update: Update, context: CallbackContext):
-    total_users = len(db.get_all_users())
-    active_users = len(db.get_active_users(30))
-    total_content = len(db.get_all_content())
-    total_categories = len(db.get_categories())
-    
-    stats_text = f"📊 إحصائيات البوت:\n\n"
-    stats_text += f"👥 المستخدمون: {total_users}\n"
-    stats_text += f"🎯 النشطون: {active_users}\n"
-    stats_text += f"📦 المحتوى: {total_content}\n"
-    stats_text += f"📁 الأقسام: {total_categories}"
-    
-    await update.message.reply_text(stats_text)
 
 async def error_handler(update: Update, context: CallbackContext) -> None:
     logger.error(f"حدث خطأ: {context.error}")
@@ -971,7 +1383,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
     
-    logger.info("🚀 بدء تشغيل البوت المحسن...")
+    logger.info("🚀 بدء تشغيل البوت مع دعم Firebase...")
     application.run_polling()
 
 if __name__ == '__main__':
