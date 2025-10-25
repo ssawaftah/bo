@@ -820,7 +820,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
         context.user_data['editing_premium_message'] = True
     
-    # الإعدادات
+    # الإعدادات - تم إصلاح زر اتصل بنا
     elif text == "✏️ رسالة الترحيب":
         current = db.get_setting('welcome_message')
         await update.message.reply_text(f"الرسالة الحالية:\n{current}\n\nأرسل الرسالة الجديدة:")
@@ -830,6 +830,11 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         current = db.get_setting('about_text')
         await update.message.reply_text(f"النص الحالي:\n{current}\n\nأرسل النص الجديد:")
         context.user_data['editing_about'] = True
+    
+    elif text == "📞 اتصل بنا":
+        current = db.get_setting('contact_text')
+        await update.message.reply_text(f"النص الحالي:\n{current}\n\nأرسل النص الجديد:")
+        context.user_data['editing_contact'] = True
     
     elif text == "✏️ اسم قسم المميز":
         current = db.get_setting('premium_section_name')
@@ -974,6 +979,11 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text("✅ تم تحديث حول البوت", reply_markup=admin_settings_menu())
         context.user_data.clear()
     
+    elif context.user_data.get('editing_contact'):
+        db.update_setting('contact_text', text)
+        await update.message.reply_text("✅ تم تحديث اتصل بنا", reply_markup=admin_settings_menu())
+        context.user_data.clear()
+    
     elif context.user_data.get('editing_premium_section_name'):
         db.update_setting('premium_section_name', text)
         await update.message.reply_text(f"✅ تم تحديث اسم قسم المميز إلى: {text}", reply_markup=admin_settings_menu())
@@ -991,7 +1001,7 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
         await update.message.reply_text(f"✅ تم الإرسال إلى {success} مستخدم", reply_markup=admin_main_menu())
         context.user_data.clear()
     
-    # معالجة الأزرار الخاصة
+    # معالجة الأزرار الخاصة - تم إصلاح مشكلة الحذف
     elif text.startswith("جعل "):
         if text.endswith(" مميز"):
             category_name = text[4:-5]
@@ -1005,13 +1015,18 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
     elif text.startswith("تمييز "):
         content_title = text[7:]
         all_content = db.get_all_content()
+        content_found = False
         for content in all_content:
-            if content[1] == content_title:
+            # البحث باستخدام startswith لمطابقة الجزء الأول من العنوان
+            if content[1].startswith(content_title):
                 db.conn.execute('UPDATE content SET is_premium = 1 WHERE id = ?', (content[0],))
                 db.conn.commit()
-                await update.message.reply_text(f"✅ تم جعل المحتوى {content_title} مميز", reply_markup=admin_content_menu())
-                return
-        await update.message.reply_text("❌ محتوى غير موجود")
+                await update.message.reply_text(f"✅ تم جعل المحتوى {content[1]} مميز", reply_markup=admin_content_menu())
+                content_found = True
+                break
+        
+        if not content_found:
+            await update.message.reply_text("❌ محتوى غير موجود")
     
     elif text.startswith("حذف "):
         if text.startswith("حذف قسم "):
@@ -1022,16 +1037,24 @@ async def handle_admin_message(update: Update, context: CallbackContext) -> None
                 await update.message.reply_text(f"✅ تم حذف القسم: {category_name}", reply_markup=admin_categories_menu())
             else:
                 await update.message.reply_text("❌ قسم غير موجود")
+        
         elif text.startswith("حذف محتوى "):
             content_title = text[11:]
             all_content = db.get_all_content()
+            content_found = False
             for content in all_content:
-                if content[1] == content_title:
+                # البحث باستخدام startswith لمطابقة الجزء الأول من العنوان
+                if content[1].startswith(content_title):
                     db.delete_content(content[0])
-                    await update.message.reply_text(f"✅ تم حذف المحتوى: {content_title}", reply_markup=admin_content_menu())
-                    return
-            await update.message.reply_text("❌ محتوى غير موجود")
+                    await update.message.reply_text(f"✅ تم حذف المحتوى: {content[1]}", reply_markup=admin_content_menu())
+                    content_found = True
+                    break
+            
+            if not content_found:
+                await update.message.reply_text("❌ محتوى غير موجود")
+        
         else:
+            # معالجة الحذف من القوائم المختصرة
             category_name = text[5:]
             category_id = get_category_id_by_name(category_name)
             if category_id:
